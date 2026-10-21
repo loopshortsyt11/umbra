@@ -59,8 +59,22 @@ jobs:
           git commit -m "Güvenlik güncellemesi: v$(node -p "require('./package.json').version")"
           git push
 
-      - name: Derle ve yayınla
+      - name: Derle
+        if: steps.guncel.outputs.yayinla == 'evet'
+        run: npx electron-builder --win --publish never
+
+      # Sürüm, etiketi ve tüm dosyalarıyla tek seferde oluşturulur (electron-builder'ın eşzamanlı yüklemesi
+      # etiket yarışına girip "Published releases must have a valid tag" hatası verebiliyor)
+      - name: Yayınla
         if: steps.guncel.outputs.yayinla == 'evet'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish always
+        run: |
+          surum=$(node -p "require('./package.json').version")
+          electron=$(node -p "require('electron/package.json').version")
+          tor=$(cat tor-paket/SURUM)
+          gh release create "v$surum" \
+            "dist/Umbra-Kurulum-$surum.exe" "dist/Umbra-Kurulum-$surum.exe.blockmap" \
+            "dist/Umbra-Tasinabilir-$surum.exe" dist/latest.yml \
+            --target "$(git rev-parse HEAD)" --title "Umbra $surum" \
+            --notes "Otomatik güvenlik güncellemesi: Electron $electron, Tor $tor (imzası doğrulandı). Kurulu Umbra bu sürümü arka planda indirir; araç çubuğunda yeşil \"Güncelle\" düğmesi çıkınca yeniden başlatman yeterli."
