@@ -32,6 +32,17 @@
       <button id="ai" class="ikon" title="Umbra AI (Alt+A)">✨</button>
       <button id="menu" class="ikon" title="Menü">⋮</button>
 
+      <div id="yerimi-pencere" hidden>
+        <div class="yp-baslik" id="yp-baslik">Yer işareti eklendi</div>
+        <label class="yp-satir"><span>Ad</span><input id="yp-ad" spellcheck="false" autocomplete="off"></label>
+        <label class="yp-satir"><span>Klasör</span><select id="yp-klasor"></select></label>
+        <label class="yp-satir" id="yp-yeni-satir" hidden><span>Yeni klasör</span><input id="yp-yeni" placeholder="Klasör adı" autocomplete="off"></label>
+        <div class="yp-dugmeler">
+          <button type="button" id="yp-kaldir">Kaldır</button>
+          <button type="button" id="yp-bitti" class="birincil">Bitti</button>
+        </div>
+      </div>
+
       <form id="bul" hidden>
         <input id="bul-metin" spellcheck="false" autocomplete="off" placeholder="Sayfada bul">
         <span id="bul-sonuc"></span>
@@ -39,6 +50,11 @@
         <button type="button" id="bul-sonraki" class="ikon kucuk" title="Sonraki (Enter)">˅</button>
         <button type="button" id="bul-kapat" class="ikon kucuk" title="Kapat (Esc)">×</button>
       </form>
+    </div>
+    <div id="yerimi-cubugu" hidden>
+      <div id="cubuk-ogeler"></div>
+      <button type="button" id="cubuk-tasma" class="cubuk-dugme" title="Diğer yer işaretleri" hidden>»</button>
+      <button type="button" id="cubuk-tumu" class="cubuk-dugme" title="Tüm yer işaretleri">📁 Tüm yer işaretleri</button>
     </div>
   </div>
   <div id="oneriler" hidden></div>

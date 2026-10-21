@@ -25,7 +25,7 @@ html, body {
   font: 13px "Segoe UI", system-ui, sans-serif;
   user-select: none;
 }
-#ust { height: 82px; background: var(--zemin); }
+#ust { background: var(--zemin); }
 /* Sekme satırı pencerenin başlık çubuğudur: boş yerinden tutulup taşınır, çift tıklayınca büyür.
    Sağdaki 140 px, Windows'un küçült/büyüt/kapat düğmelerine ayrılır. */
 #sekmeler { display: flex; align-items: flex-end; height: 38px; padding: 0 140px 0 6px; gap: 4px; -webkit-app-region: drag; }
@@ -113,3 +113,37 @@ body.tor-mod #arac-cubugu { background: var(--tor-aktif); }
 .oneri .tur { width: 18px; text-align: center; flex: none; }
 .oneri .metin { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .oneri .metin small { color: var(--soluk); margin-left: 8px; }
+
+/* Geri / ileri: Chrome'daki kadar belirgin */
+#geri, #ileri { font-size: 20px; font-weight: 700; }
+#arac-cubugu .ikon:disabled { color: #ffffff75; }
+
+/* --- Yer işaretleri çubuğu --- */
+#yerimi-cubugu { display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 8px 2px; background: var(--sekme-aktif);
+  border-bottom: 1px solid #ffffff12; }
+#yerimi-cubugu[hidden] { display: none; }
+body.gizli-mod #yerimi-cubugu { background: var(--gizli-aktif); }
+body.tor-mod #yerimi-cubugu { background: var(--tor-aktif); }
+#cubuk-ogeler { flex: 1; min-width: 0; display: flex; gap: 2px; overflow: hidden; }
+.cubuk-oge, .cubuk-dugme { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border: 0; border-radius: 13px;
+  background: transparent; color: var(--yazi); font: inherit; font-size: 12px; white-space: nowrap; flex: none; cursor: default; }
+.cubuk-oge { max-width: 180px; }
+.cubuk-oge span { overflow: hidden; text-overflow: ellipsis; }
+.cubuk-oge img, .cubuk-oge .harf { width: 16px; height: 16px; flex: none; border-radius: 3px; }
+.cubuk-oge .harf { display: grid; place-items: center; font-size: 10px; font-weight: 700; background: #4c5bd4; }
+.cubuk-oge:hover, .cubuk-dugme:hover { background: #ffffff1a; }
+.cubuk-gizli { display: none; }
+.cubuk-bos { color: var(--soluk); font-size: 12px; padding: 0 6px; }
+
+/* --- Yıldız penceresi (Chrome'daki "Yer işareti eklendi") --- */
+#yerimi-pencere { position: absolute; top: 40px; right: 120px; z-index: 5; width: 330px; padding: 16px; display: grid; gap: 12px;
+  background: #262a31; border: 1px solid #ffffff24; border-radius: 12px; box-shadow: 0 14px 34px #000b; }
+#yerimi-pencere[hidden] { display: none; }
+.yp-baslik { font-size: 15px; font-weight: 600; }
+.yp-satir { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 10px; font-size: 12px; color: var(--soluk); }
+.yp-satir input, .yp-satir select { min-width: 0; padding: 7px 9px; border-radius: 8px; border: 1px solid #ffffff2a; background: var(--girdi);
+  color: var(--yazi); font: inherit; font-size: 13px; outline: 0; }
+.yp-satir input:focus, .yp-satir select:focus { border-color: var(--vurgu); }
+.yp-dugmeler { display: flex; justify-content: flex-end; gap: 8px; }
+.yp-dugmeler button { padding: 7px 16px; border-radius: 16px; border: 1px solid #ffffff2a; background: transparent; color: #9cc0ff; font: inherit; }
+.yp-dugmeler button.birincil { background: var(--vurgu); border-color: var(--vurgu); color: white; font-weight: 600; }

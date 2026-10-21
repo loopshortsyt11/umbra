@@ -4,12 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const { Tor } = require('./tor');
 const { Asistan } = require('./ai');
-const { Veri, ARAMA_MOTORLARI, OZEL_MOTORLAR, OZEL_BASLANGIC } = require('./veri');
+const { Veri, ARAMA_MOTORLARI, OZEL_MOTORLAR, OZEL_BASLANGIC, klasorAdi } = require('./veri');
 const { TurboIndir } = require('./turboindir');
 const { Guncelleyici } = require('./guncelleme');
 const { webArama } = require('./arama');
 
 const UI_YUKSEKLIK = 82;
+const CUBUK_YUKSEKLIK = 30; // adres çubuğunun altındaki yer işaretleri çubuğu
+const ustYukseklik = () => UI_YUKSEKLIK + (veri.ayarlar.yerImiCubugu ? CUBUK_YUKSEKLIK : 0);
 const PANEL_GENISLIK = 400;
 const TOR_KOK = app.isPackaged ? path.join(process.resourcesPath, 'tor-paket') : path.join(__dirname, 'tor-paket');
 const SIMGE = path.join(__dirname, 'arayuz', 'simge.png');
@@ -45,6 +47,9 @@ app.commandLine.appendSwitch('site-per-process');
 const DUMAN_TESTI = process.argv.includes('--duman-testi');
 const ARAYUZ_TESTI = !app.isPackaged && process.argv.includes('--arayuz-testi'); // yalnızca geliştirme sürümünde
 if (ARAYUZ_TESTI) {
+  // Test penceresi başka pencerelerin altında kalsa da çizim ve boyutlanma durmasın
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
   app.setPath('userData', path.join(app.getPath('temp'), `umbra-arayuz-testi-${process.pid}`));
   // Ücretli AI arama testi için: verilen klasördeki şifreli anahtar (ve onu açan Local State) test klasörüne kopyalanır
   const anahtarKlasoru = process.env.UMBRA_TEST_ANAHTAR_KLASORU;
@@ -550,14 +555,15 @@ function sekmeAdresi(s) {
 function yerlesim() {
   if (!pencere) return;
   const { width, height } = pencere.getContentBounds();
-  const ust = tamEkran ? 0 : UI_YUKSEKLIK;
+  const ust = tamEkran ? 0 : ustYukseklik();
   const panelG = panelAcik && !tamEkran ? Math.min(PANEL_GENISLIK, Math.floor(width / 2)) : 0;
   if (panel) panel.setBounds({ x: width - panelG, y: ust, width: panelG, height: Math.max(0, height - ust) });
   const s = aktifSekme();
   if (s) s.view.setBounds({ x: 0, y: ust, width: width - panelG, height: Math.max(0, height - ust) });
-  arayuz.setBounds({ x: 0, y: 0, width, height: tamEkran ? 0 : Math.min(height, UI_YUKSEKLIK + arayuzEk) });
-  // Öneri listesi açıkken arayüz, sayfanın üstüne çıkabilmesi için en öne alınır
+  // Öneri listesi ya da yıldız penceresi açıkken arayüz, sayfanın üstüne çıkabilmesi için en öne alınır.
+  // (Önce öne alınır, sonra boyutlanır: tersi sırada yeniden eklenen görünüm yeni boyutu almayabiliyor.)
   if (arayuzEk) pencere.contentView.addChildView(arayuz);
+  arayuz.setBounds({ x: 0, y: 0, width, height: tamEkran ? 0 : Math.min(height, ust + arayuzEk) });
 }
 
 // --- AI paneli ---
@@ -644,6 +650,8 @@ function arayuzuGuncelle() {
       aiAcik: panelAcik,
       indirme: { var: tumIndirmeler().length > 0, aktif: iniyor.length, yuzde: toplam ? Math.round((alinan / toplam) * 100) : null },
       guncelleme: guncelleyici.durum,
+      // Yer işaretleri çubuğu (kapalıysa null)
+      cubuk: veri.ayarlar.yerImiCubugu ? veri.cubuktakiler().map((y) => ({ id: y.id, baslik: y.baslik, url: y.url })) : null,
     });
     const tur = aktifSekme()?.tur;
     if (panel && tur !== sonPanelTuru && !panel.webContents.isLoading()) {
@@ -808,8 +816,12 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
   }
   if (arkaPlanda && aktifId !== null) arayuzuGuncelle();
   else sekmeyeGec(id);
-  // Yeni sekme sayfası Umbra Arama ise imleç sayfadaki arama kutusunda olur, değilse adres çubuğunda
-  if (!arkaPlanda && url === veri.anaSayfa(tur === 'ic' ? 'normal' : tur) && !(ic === 'ara' && !sekme.icSorgu)) adresCubugunaOdaklan();
+  // Yeni sekmede imleç Chrome'daki gibi adres çubuğunda olur
+  // (Sayfa yüklenince Chromium odağı sekmeye verir; bu yüzden yükleme bitince bir kez daha adres çubuğuna alınır.)
+  if (!arkaPlanda && url === veri.anaSayfa(tur === 'ic' ? 'normal' : tur)) {
+    adresCubugunaOdaklan();
+    wc.once('did-finish-load', () => { if (!wc.isDestroyed() && aktifWc() === wc) adresCubugunaOdaklan(); });
+  }
   oturumuKaydet();
   return id;
 }
@@ -1066,13 +1078,71 @@ function bulAc() {
   arayuz.webContents.send('bul:ac');
 }
 
-function yerImiDegistir() {
+function yerImleriDegisti() {
+  arayuzuGuncelle();
+  icSayfalaraBildir('yer-imleri');
+}
+
+function yerImiPenceresiGonder(y, yeni) {
+  arayuz.webContents.focus();
+  arayuz.webContents.send('yerimi:pencere', {
+    id: y.id, baslik: y.baslik, url: y.url, klasor: veri.klasoru(y), yeni,
+    klasorler: veri.klasorler().map((k) => ({ k, ad: klasorAdi(k) })),
+  });
+}
+
+// Yıldız / Ctrl+D (Chrome gibi): sayfa yer imlerinde değilse hemen çubuğa eklenir, ardından ad ve klasörün
+// seçildiği küçük pencere açılır. Zaten ekliyse aynı pencere düzenleme için açılır.
+function yerImiPenceresi() {
   const s = aktifSekme();
   const url = s && sekmeAdresi(s);
   if (!webAdresiMi(url)) return;
-  veri.yerImiDegistir(url, s.view.webContents.getTitle());
+  const yeni = !veri.yerImiMi(url);
+  const y = veri.yerImiEkle(url, s.view.webContents.getTitle());
+  yerImleriDegisti();
+  yerImiPenceresiGonder(y, yeni);
+}
+
+function yerImiCubugunuDegistir(acik = !veri.ayarlar.yerImiCubugu) {
+  veri.ayarla('yerImiCubugu', acik);
+  yerlesim();
   arayuzuGuncelle();
-  icSayfalaraBildir('yer-imleri');
+}
+
+// Yer işaretleri çubuğundaki bir öğenin sağ tık menüsü
+function yerImiMenusu(id, x, y) {
+  const b = veri.yerImleri.find((k) => k.id === id);
+  if (!b) return;
+  Menu.buildFromTemplate([
+    { label: 'Aç', click: () => git(aktifSekme(), b.url) },
+    { label: 'Yeni sekmede aç', click: () => sekmeAc(b.url, 'normal', { arkaPlanda: true }) },
+    { label: 'Gizli sekmede aç', click: () => sekmeAc(b.url, 'gizli') },
+    { type: 'separator' },
+    { label: 'Düzenle…', click: () => yerImiPenceresiGonder(b, false) },
+    { label: 'Sil', click: () => { veri.yerImiSil(b.id); yerImleriDegisti(); } },
+    { type: 'separator' },
+    { label: 'Yer işaretleri yöneticisi', click: () => sekmeAc('umbra://yer-imleri') },
+    { label: 'Yer işaretleri çubuğunu gizle', click: () => yerImiCubugunuDegistir(false) },
+  ]).popup({ window: pencere, x: Math.round(x), y: Math.round(y) });
+}
+
+// Çubuğa sığmayanlar (») ve "Tüm yer işaretleri" menüleri
+const yerImiOgesi = (b) => ({ label: (b.baslik || b.url).slice(0, 60), click: () => git(aktifSekme(), b.url) });
+function yerImiTasmaMenusu(idler, x, y) {
+  const ogeler = idler.map((id) => veri.yerImleri.find((k) => k.id === id)).filter(Boolean).map(yerImiOgesi);
+  if (ogeler.length) Menu.buildFromTemplate(ogeler).popup({ window: pencere, x: Math.round(x), y: Math.round(y) });
+}
+function tumYerImleriMenusu(x, y) {
+  const ogeler = veri.klasorler().filter((k) => k !== 'cubuk').map((k) => {
+    const icindekiler = veri.yerImleri.filter((b) => veri.klasoru(b) === k);
+    return { label: `📁 ${klasorAdi(k)}`, submenu: icindekiler.length ? icindekiler.map(yerImiOgesi) : [{ label: '(boş)', enabled: false }] };
+  });
+  Menu.buildFromTemplate([
+    ...ogeler,
+    { type: 'separator' },
+    { label: 'Yer işaretleri yöneticisi', accelerator: 'CmdOrCtrl+Shift+O', click: () => sekmeAc('umbra://yer-imleri') },
+    { label: veri.ayarlar.yerImiCubugu ? 'Yer işaretleri çubuğunu gizle' : 'Yer işaretleri çubuğunu göster', accelerator: 'CmdOrCtrl+Shift+B', click: () => yerImiCubugunuDegistir() },
+  ]).popup({ window: pencere, x: Math.round(x), y: Math.round(y) });
 }
 
 function zoom(fark) {
@@ -1092,7 +1162,8 @@ function anaMenuOgeleri() {
     { label: 'Yer imleri', accelerator: 'CmdOrCtrl+Shift+O', click: () => sekmeAc('umbra://yer-imleri') },
     { type: 'separator' },
     { label: 'Sayfada bul…', accelerator: 'CmdOrCtrl+F', click: bulAc },
-    { label: 'Bu sayfayı yer imlerine ekle', accelerator: 'CmdOrCtrl+D', click: yerImiDegistir },
+    { label: 'Bu sayfayı yer imlerine ekle', accelerator: 'CmdOrCtrl+D', click: yerImiPenceresi },
+    { label: 'Yer işaretleri çubuğunu göster/gizle', accelerator: 'CmdOrCtrl+Shift+B', click: () => yerImiCubugunuDegistir() },
     { label: 'Sayfayı farklı kaydet…', accelerator: 'CmdOrCtrl+S', click: () => sayfayiKaydet(aktifWc()) },
     { label: 'Yazdır…', accelerator: 'CmdOrCtrl+P', click: () => aktifWc()?.print() },
     { type: 'separator' },
@@ -1161,12 +1232,17 @@ function icVerisi(sayfa, arama = '') {
     }
     return { gecmis: sonuc };
   }
-  if (sayfa === 'yer-imleri') return { yerImleri: [...veri.yerImleri].reverse() };
+  if (sayfa === 'yer-imleri') {
+    return {
+      yerImleri: [...veri.yerImleri].reverse().map((y) => ({ ...y, klasor: veri.klasoru(y) })),
+      klasorler: veri.klasorler().map((k) => ({ k, ad: klasorAdi(k) })),
+    };
+  }
   if (sayfa === 'ara') {
     return {
       aiAnahtar: asistan.anahtarVar(),
       varsayilan: veri.ayarlar.aramaMotoru === 'umbra',
-      kisayollar: [...veri.yerImleri].reverse().slice(0, 8),
+      kisayollar: veri.kisayollar(),
       yedekMotor: { ad: veri.ozelMotor().ad, ara: veri.ozelMotor().ara },
     };
   }
@@ -1206,12 +1282,22 @@ async function icEylem(e, eylem, ...arg) {
     }
     case 'gecmis-sil': veri.gecmisiSil(arg[0] === 'hepsi' ? 'hepsi' : [].concat(arg[0]).map(Number)); return;
     case 'yerimi-sil': veri.yerImiSil(Number(arg[0])); arayuzuGuncelle(); return;
-    case 'yerimi-duzenle': return { tamam: veri.yerImiDuzenle(Number(arg[0]), arg[1], adreseCevir(arg[2])) };
+    case 'yerimi-duzenle': {
+      const tamam = veri.yerImiDuzenle(Number(arg[0]), arg[1], adreseCevir(arg[2]), typeof arg[3] === 'string' ? arg[3] : undefined);
+      if (tamam) arayuzuGuncelle();
+      return { tamam };
+    }
+    case 'kisayol-ekle': {
+      const url = adreseCevir(arg[1]);
+      return { tamam: Boolean(url && webAdresiMi(url) && veri.kisayolEkle(arg[0], url)) };
+    }
+    case 'kisayol-sil': veri.kisayolKaldir(String(arg[0] || '')); return {};
     case 'indirme': return indirmeEylemi(String(arg[0]), String(arg[1]));
     case 'indirmeleri-temizle': veri.indirmeleriTemizle(); geciciIndirmeler.splice(0); indirmeDegisti(); return;
     case 'ayar': {
       const tamam = veri.ayarla(String(arg[0]), arg[1]);
       // Video üstündeki "İndir" düğmesi açık sekmelerde de hemen gizlenir/görünür
+      if (tamam && arg[0] === 'yerImiCubugu') { yerlesim(); arayuzuGuncelle(); }
       if (tamam && arg[0] === 'turboIndir') {
         for (const x of sekmeler.values()) if (x.tur === 'normal') x.view.webContents.send('turbo:etkin', turboDugmesiEtkin());
       }
@@ -1281,7 +1367,21 @@ function ipcKur() {
   dinle('nav:stop', () => aktifWc()?.stop());
   dinle('nav:home', () => git(aktifSekme(), veri.anaSayfa(aktifSekme()?.tur)));
   dinle('ai:panel', () => panelAc());
-  dinle('yerimi:degistir', yerImiDegistir);
+  dinle('yerimi:pencere', yerImiPenceresi);
+  dinle('yerimi:kaydet', (id, baslik, klasor) => {
+    const b = veri.yerImleri.find((k) => k.id === Number(id));
+    if (b && veri.yerImiDuzenle(b.id, String(baslik || ''), b.url, String(klasor || 'cubuk'))) yerImleriDegisti();
+  });
+  dinle('yerimi:kaldir', (id) => { veri.yerImiSil(Number(id)); yerImleriDegisti(); });
+  dinle('yerimi:ac', (id, yeniSekme) => {
+    const b = veri.yerImleri.find((k) => k.id === Number(id));
+    if (!b) return;
+    if (yeniSekme) sekmeAc(b.url, 'normal', { arkaPlanda: true });
+    else git(aktifSekme(), b.url);
+  });
+  dinle('yerimi:menu', (id, x, y) => yerImiMenusu(Number(id), x, y));
+  dinle('yerimi:tasma', (idler, x, y) => yerImiTasmaMenusu([].concat(idler).map(Number), x, y));
+  dinle('yerimi:tumu', (x, y) => tumYerImleriMenusu(x, y));
   dinle('indirilenler:ac', () => sekmeAc('umbra://indirilenler'));
   dinle('medya:menu', medyaMenusu);
   dinle('guncelleme:yeniden', () => guncelleyici.yenidenBaslat());

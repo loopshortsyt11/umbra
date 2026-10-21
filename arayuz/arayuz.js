@@ -6,6 +6,7 @@ const TUR_SIMGESI = { gizli: '🕶', tor: '🧅', ic: '🌑' };
 const ONERI_YUKSEKLIK = 38;
 let adresDuzenleniyor = false;
 let aktif = null;
+let aktifIdSon = null;
 let oneriler = [], seciliOneri = -1, oneriIstek = 0;
 
 $('yeni-sekme').onclick = () => umbra.yeniSekme('normal');
@@ -15,7 +16,7 @@ $('geri').onclick = () => umbra.geri();
 $('ileri').onclick = () => umbra.ileri();
 $('ana').onclick = () => umbra.anaSayfa();
 $('ai').onclick = () => umbra.aiPaneli();
-$('yildiz').onclick = () => umbra.yerImi();
+$('yildiz').onclick = () => umbra.yerImiPenceresi();
 $('indirme').onclick = () => umbra.indirilenler();
 $('guncelle').onclick = () => umbra.guncelle();
 $('medya').onclick = (e) => {
@@ -27,10 +28,20 @@ $('menu').onclick = (e) => {
   umbra.menu(r.right - 220, r.bottom + 2);
 };
 
+// Arayüz, açık öneri listesi ya da yıldız penceresi kadar sayfanın üstüne taşar
+function yuksekligiBildir() {
+  const oneri = oneriKutusu.hidden ? 0 : oneriler.length * ONERI_YUKSEKLIK + 12;
+  const pencere = document.getElementById('yerimi-pencere');
+  umbra.yukseklik(Math.max(oneri, pencere.hidden ? 0 : pencere.offsetHeight + 60));
+}
+
+// Yeni sekme sayfasında adres çubuğu Chrome'daki gibi boş görünür
+const gosterilenAdres = (url) => (url === 'about:blank' || url === 'umbra://ara' ? '' : url);
+
 // --- Adres çubuğu ve öneriler ---
 function adresiGeriYukle() {
   adresDuzenleniyor = false;
-  if (aktif) adres.value = aktif.url;
+  if (aktif) adres.value = gosterilenAdres(aktif.url);
 }
 
 function onerileriGizle() {
@@ -38,7 +49,7 @@ function onerileriGizle() {
   oneriKutusu.hidden = true;
   oneriler = [];
   seciliOneri = -1;
-  umbra.yukseklik(0);
+  yuksekligiBildir();
 }
 
 function onerileriGoster() {
@@ -66,7 +77,7 @@ function onerileriGoster() {
     return el;
   }));
   oneriKutusu.hidden = false;
-  umbra.yukseklik(oneriler.length * ONERI_YUKSEKLIK + 12);
+  yuksekligiBildir();
 }
 
 function oneriSec(i) {
@@ -133,7 +144,9 @@ adres.addEventListener('mouseup', (e) => {
   if (adres.selectionStart === adres.selectionEnd) { e.preventDefault(); adres.select(); }
 });
 adres.addEventListener('blur', () => { adresDuzenleniyor = false; onerileriGizle(); });
-adres.addEventListener('input', (e) => { adresDuzenleniyor = true; onerileriGetir(/^delete/.test(e.inputType || '')); });
+let adresYazildi = false; // odak alındıktan sonra adres çubuğuna bir şey yazıldı mı
+adres.addEventListener('blur', () => { adresYazildi = false; });
+adres.addEventListener('input', (e) => { adresDuzenleniyor = true; adresYazildi = true; onerileriGetir(/^delete/.test(e.inputType || '')); });
 adres.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!oneriKutusu.hidden) onerileriGizle();
@@ -149,6 +162,8 @@ adres.addEventListener('keydown', (e) => {
 });
 // metin: yeni sekme sayfasındaki kutuya yazılmaya başlanan metin (Chrome'daki gibi adres çubuğuna aktarılır)
 umbra.odakDinle((metin) => {
+  // Kullanıcı adres çubuğuna yazmaya başladıysa (sayfa yüklenince gelen ikinci çağrı) seçim bozulmasın
+  if (!metin && document.activeElement === adres && adresYazildi) return;
   adres.focus();
   if (metin) {
     adres.value = metin;
@@ -156,6 +171,7 @@ umbra.odakDinle((metin) => {
     adresDuzenleniyor = true;
     onerileriGetir();
   } else {
+    if (aktif && !adresYazildi) adres.value = gosterilenAdres(aktif.url);
     adres.select();
   }
 });
@@ -264,8 +280,9 @@ function sekmeleriCiz(sekmeler) {
   if (mevcut.length !== sirali.length || sirali.some((el, i) => mevcut[i] !== el)) liste.replaceChildren(...sirali);
 }
 
-umbra.guncellemeyiDinle(({ sekmeler, aiAcik, indirme, guncelleme }) => {
+umbra.guncellemeyiDinle(({ sekmeler, aiAcik, indirme, guncelleme, cubuk }) => {
   sekmeleriCiz(sekmeler);
+  cubuguCiz(cubuk);
   $('ai').classList.toggle('acik', aiAcik);
   $('guncelle').hidden = guncelleme.durum !== 'hazir';
   if (guncelleme.surum) $('guncelle').title = `Umbra ${guncelleme.surum} indirildi — yeniden başlatıp güncelle`;
@@ -306,13 +323,138 @@ umbra.guncellemeyiDinle(({ sekmeler, aiAcik, indirme, guncelleme }) => {
   yildiz.hidden = !web;
   yildiz.textContent = a.yerImi ? '★' : '☆';
   yildiz.classList.toggle('dolu', a.yerImi);
-  yildiz.title = a.yerImi ? 'Yer iminden kaldır (Ctrl+D)' : 'Yer imlerine ekle (Ctrl+D)';
+  yildiz.title = a.yerImi ? 'Yer işaretini düzenle (Ctrl+D)' : 'Bu sekmeyi yer işaretlerine ekle (Ctrl+D)';
 
   $('sayac').textContent = a.engellenen;
   const medya = $('medya');
   medya.hidden = a.medya < 0 || !web;
   $('medya-sayi').textContent = a.medya > 0 ? a.medya : '';
   medya.title = a.medya > 0 ? `TurboDownloader: sayfada ${a.medya} medya bulundu` : 'TurboDownloader ile bu sayfanın videosunu/sesini indir';
-  if (!adresDuzenleniyor) adres.value = a.url === 'about:blank' ? '' : a.url;
+  // Başka sekmeye geçildiyse adres o sekmenin adresini gösterir (odak adres çubuğundaysa tümü seçili kalır)
+  if (a.id !== aktifIdSon) {
+    aktifIdSon = a.id;
+    adresYazildi = false;
+    adres.value = gosterilenAdres(a.url);
+    if (document.activeElement === adres) adres.select();
+  } else if (!adresDuzenleniyor) adres.value = gosterilenAdres(a.url);
   document.title = a.baslik + ' — Umbra';
 });
+
+// --- Yer işaretleri çubuğu (adres çubuğunun altında, Chrome gibi) ---
+const cubukKutusu = $('yerimi-cubugu');
+const cubukOgeleri = $('cubuk-ogeler');
+const tasma = $('cubuk-tasma');
+let cubukImzasi = '';
+
+function cubukOgesi(y) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'cubuk-oge';
+  b.dataset.id = y.id;
+  b.title = y.baslik + ' — ' + y.url;
+  let host = '';
+  try { host = new URL(y.url).hostname; } catch {}
+  const harf = () => Object.assign(document.createElement('span'), { className: 'harf', textContent: (y.baslik || host || '?').trim().charAt(0).toUpperCase() });
+  let simge = harf();
+  if (host) {
+    simge = document.createElement('img');
+    simge.src = 'https://icons.duckduckgo.com/ip3/' + host + '.ico';
+    simge.onerror = () => simge.replaceWith(harf());
+  }
+  const ad = Object.assign(document.createElement('span'), { textContent: y.baslik || host || y.url });
+  b.append(simge, ad);
+  b.onclick = (e) => umbra.yerImiAc(y.id, e.ctrlKey);
+  b.onauxclick = (e) => { if (e.button === 1) umbra.yerImiAc(y.id, true); };
+  b.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); };
+  b.oncontextmenu = (e) => { e.preventDefault(); umbra.yerImiMenu(y.id, e.clientX, e.clientY); };
+  return b;
+}
+
+// Sığmayan öğeler gizlenir ve "»" menüsünden açılır
+function tasmayiHesapla() {
+  if (cubukKutusu.hidden) return;
+  const ogeler = [...cubukOgeleri.children].filter((el) => el.classList.contains('cubuk-oge'));
+  ogeler.forEach((el) => el.classList.remove('cubuk-gizli'));
+  tasma.hidden = true;
+  const sinir = () => cubukOgeleri.getBoundingClientRect().right;
+  if (!ogeler.length || ogeler[ogeler.length - 1].getBoundingClientRect().right <= sinir()) return;
+  tasma.hidden = false;
+  for (const el of ogeler) if (el.getBoundingClientRect().right > sinir()) el.classList.add('cubuk-gizli');
+}
+
+function cubuguCiz(cubuk) {
+  const imza = JSON.stringify(cubuk);
+  if (imza === cubukImzasi) return;
+  cubukImzasi = imza;
+  cubukKutusu.hidden = !cubuk;
+  if (!cubuk) return;
+  cubukOgeleri.replaceChildren(...(cubuk.length ? cubuk.map(cubukOgesi)
+    : [Object.assign(document.createElement('span'), { className: 'cubuk-bos', textContent: 'Hızlı erişim için yer işaretlerinizi buraya, yer işaretleri çubuğuna ekleyin (☆ ya da Ctrl+D)' })]));
+  tasmayiHesapla();
+}
+window.addEventListener('resize', tasmayiHesapla);
+tasma.onclick = (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  const idler = [...cubukOgeleri.querySelectorAll('.cubuk-gizli')].map((el) => el.dataset.id);
+  umbra.yerImiTasma(idler, r.left, r.bottom + 2);
+};
+$('cubuk-tumu').onclick = (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  umbra.yerImiTumu(r.right - 240, r.bottom + 2);
+};
+
+// --- Yıldız penceresi: ad ve kaydedilecek klasör sorulur ---
+const yp = $('yerimi-pencere');
+const ypAd = $('yp-ad');
+const ypKlasor = $('yp-klasor');
+const ypYeni = $('yp-yeni');
+const YENI_KLASOR = '__yeni__';
+let ypKayit = null;
+
+function ypKapat(kaydet) {
+  if (!ypKayit) return;
+  const k = ypKayit;
+  ypKayit = null;
+  yp.hidden = true;
+  yuksekligiBildir();
+  if (!kaydet) return;
+  let klasor = ypKlasor.value;
+  if (klasor === YENI_KLASOR) klasor = ypYeni.value.trim() || k.klasor;
+  umbra.yerImiKaydet(k.id, ypAd.value.trim() || k.baslik, klasor);
+}
+
+umbra.yerImiPencereDinle((v) => {
+  onerileriGizle();
+  ypKayit = v;
+  $('yp-baslik').textContent = v.yeni ? 'Yer işareti eklendi' : 'Yer işaretini düzenle';
+  ypAd.value = v.baslik || '';
+  const secenekler = v.klasorler.map(({ k, ad }) => Object.assign(document.createElement('option'), { value: k, textContent: ad }));
+  secenekler.push(Object.assign(document.createElement('option'), { value: YENI_KLASOR, textContent: 'Yeni klasör…' }));
+  ypKlasor.replaceChildren(...secenekler);
+  ypKlasor.value = v.klasor;
+  ypYeni.value = '';
+  $('yp-yeni-satir').hidden = true;
+  yp.hidden = false;
+  yuksekligiBildir();
+  ypAd.focus();
+  ypAd.select();
+});
+ypKlasor.onchange = () => {
+  const yeni = ypKlasor.value === YENI_KLASOR;
+  $('yp-yeni-satir').hidden = !yeni;
+  yuksekligiBildir();
+  if (yeni) ypYeni.focus();
+};
+$('yp-bitti').onclick = () => ypKapat(true);
+$('yp-kaldir').onclick = () => {
+  const k = ypKayit;
+  ypKapat(false);
+  if (k) umbra.yerImiKaldir(k.id);
+};
+yp.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); ypKapat(true); }
+  else if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); ypKapat(true); }
+});
+// Pencerenin dışına tıklanınca (sayfaya ya da arayüzün başka yerine) Chrome gibi kaydedip kapanır
+window.addEventListener('blur', () => ypKapat(true));
+document.addEventListener('mousedown', (e) => { if (ypKayit && !yp.contains(e.target)) ypKapat(true); });

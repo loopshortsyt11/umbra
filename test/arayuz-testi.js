@@ -199,14 +199,100 @@ module.exports = async function arayuzTesti(u) {
     await Promise.race([yuklendi, bekle(3000).then(() => { throw new Error('yeniden yükleme başlamadı'); })]);
   });
 
-  await test('Yıldız yer imi ekler ve kaldırır', async () => {
+  // --- Yer işaretleri: yıldız penceresi ve adres çubuğunun altındaki çubuk (Chrome gibi) ---
+  const ypAcik = async () => !(await ui().executeJavaScript('document.getElementById("yerimi-pencere").hidden'));
+  const cubuktakiIdler = () => ui().executeJavaScript('[...document.querySelectorAll("#cubuk-ogeler .cubuk-oge")].map((b) => Number(b.dataset.id))');
+  const yerIminiTemizle = (url) => { const y = u.veri.yerImiBul(url); if (y) u.veri.yerImiSil(y.id); };
+
+  await test('Yıldız: pencere açılır, klasör sorar, çubukta görünür, Kaldır siler', async () => {
     await kosul(() => !aktifWc().isLoading(), 15000, 'yüklemenin bitmesi');
     const url = u.sekmeAdresi(u.aktifSekme());
-    if (u.veri.yerImiMi(url)) await tikla('#yildiz');
+    yerIminiTemizle(url);
     await tikla('#yildiz');
     await kosul(() => u.veri.yerImiMi(url), 3000, 'yer iminin eklenmesi');
-    await tikla('#yildiz');
+    await kosul(ypAcik, 3000, 'yıldız penceresinin açılması');
+    const baslik = await ui().executeJavaScript('document.getElementById("yp-baslik").textContent');
+    if (baslik !== 'Yer işareti eklendi') throw new Error('pencere başlığı: ' + baslik);
+    const klasorler = await ui().executeJavaScript('[...document.querySelectorAll("#yp-klasor option")].map((o) => o.value)');
+    if (!klasorler.includes('cubuk') || !klasorler.includes('diger')) throw new Error('klasör seçenekleri eksik: ' + klasorler);
+    const id = u.veri.yerImiBul(url).id;
+    await kosul(async () => (await cubuktakiIdler()).includes(id), 3000, 'yer iminin çubukta görünmesi');
+    await tikla('#yp-kaldir');
     await kosul(() => !u.veri.yerImiMi(url), 3000, 'yer iminin kaldırılması');
+    await kosul(async () => !(await ypAcik()), 2000, 'pencerenin kapanması');
+    await kosul(async () => !(await cubuktakiIdler()).includes(id), 3000, 'yer iminin çubuktan çıkması');
+  });
+
+  await test('Yıldız penceresi: ad ve "Diğer yer işaretleri" klasörü kaydedilir', async () => {
+    const url = u.sekmeAdresi(u.aktifSekme());
+    yerIminiTemizle(url);
+    await tikla('#yildiz');
+    await kosul(ypAcik, 3000, 'yıldız penceresinin açılması');
+    await ui().executeJavaScript('document.getElementById("yp-ad").select()');
+    await ui().insertText('Test Adı');
+    await ui().executeJavaScript('(() => { const s = document.getElementById("yp-klasor"); s.value = "diger"; s.dispatchEvent(new Event("change")); })()');
+    await tikla('#yp-bitti');
+    await kosul(() => { const y = u.veri.yerImiBul(url); return y && y.baslik === 'Test Adı' && u.veri.klasoru(y) === 'diger'; }, 3000, 'ad ve klasörün kaydedilmesi');
+    const id = u.veri.yerImiBul(url).id;
+    await bekle(300);
+    if ((await cubuktakiIdler()).includes(id)) throw new Error('"Diğer" klasöründeki yer imi çubukta göründü');
+    // yeniden yıldıza basınca düzenleme penceresi açılır, yer imi silinmez
+    await tikla('#yildiz');
+    await kosul(ypAcik, 3000, 'düzenleme penceresi');
+    const baslik = await ui().executeJavaScript('document.getElementById("yp-baslik").textContent');
+    if (baslik !== 'Yer işaretini düzenle') throw new Error('pencere başlığı: ' + baslik);
+    ui().sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    ui().sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+    await kosul(async () => !(await ypAcik()), 2000, 'Esc ile kapanma');
+    if (!u.veri.yerImiMi(url)) throw new Error('Esc yer imini sildi');
+    yerIminiTemizle(url);
+  });
+
+  await test('Yer işareti çubuğundaki öğeye tıklayınca site açılır', async () => {
+    const hedef = 'https://example.com/';
+    yerIminiTemizle(hedef);
+    await yazEnter('#adres', 'example.com');
+    await adresBekle('example.com', 15000);
+    await kosul(() => !aktifWc().isLoading(), 15000, 'yüklemenin bitmesi');
+    await tikla('#yildiz');
+    await kosul(ypAcik, 3000, 'yıldız penceresi');
+    await tikla('#yp-bitti');
+    const id = u.veri.yerImiBul(hedef).id;
+    await tikla('#ana');
+    await adresBekle('umbra://ara', 5000);
+    await kosul(async () => (await cubuktakiIdler()).includes(id), 3000, 'çubukta görünmesi');
+    await tikla(`#cubuk-ogeler .cubuk-oge[data-id="${id}"]`);
+    await adresBekle('example.com', 15000);
+    yerIminiTemizle(hedef);
+  });
+
+  await test('Yeni sekmede imleç adres çubuğunda; sayfada yalnızca kısayollar var', async () => {
+    u.veri.yerImiEkle('https://example.org/', 'Örnek Yer İmi');
+    await tikla('#yeni-sekme');
+    await kosul(async () => !aktifWc().isLoading() && (await konum('.kutucuklar', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
+    await bekle(400);
+    const odak = await ui().executeJavaScript('document.hasFocus() && document.activeElement && document.activeElement.id');
+    if (odak !== 'adres') throw new Error('odak adres çubuğunda değil: ' + odak);
+    const sayfaOdak = await aktifWc().executeJavaScript('document.activeElement && document.activeElement.tagName');
+    if (sayfaOdak === 'INPUT') throw new Error('sayfadaki arama kutusu odağı aldı');
+    const adlar = await aktifWc().executeJavaScript('[...document.querySelectorAll(".kutucuk .ad")].map((e) => e.textContent)');
+    if (adlar.includes('Örnek Yer İmi')) throw new Error('yer imi kısayollarda göründü');
+    yerIminiTemizle('https://example.org/');
+  });
+
+  await test('Yeni sekme: kısayol ekle ve kaldır', async () => {
+    await kosul(async () => (await konum('.kutucuk.ekle', aktifWc())) !== null, 5000, '"Kısayol ekle" kutucuğu');
+    await tikla('.kutucuk.ekle', { wc: aktifWc() });
+    await kosul(async () => (await konum('.kisayol-formu input', aktifWc())) !== null, 3000, 'kısayol formu');
+    await aktifWc().executeJavaScript('document.querySelector(".kisayol-formu input").focus()');
+    await aktifWc().insertText('Vikipedi');
+    await aktifWc().executeJavaScript('document.querySelectorAll(".kisayol-formu input")[1].focus()');
+    await aktifWc().insertText('tr.wikipedia.org');
+    await tikla('.kisayol-formu button.birincil', { wc: aktifWc() });
+    await kosul(() => u.veri.kisayollar().some((k) => k.ad === 'Vikipedi' && k.url.includes('wikipedia.org')), 3000, 'kısayolun kaydedilmesi');
+    await kosul(async () => (await aktifWc().executeJavaScript('[...document.querySelectorAll(".kutucuk .ad")].map((e) => e.textContent)')).includes('Vikipedi'), 3000, 'kutucuğun görünmesi');
+    await aktifWc().executeJavaScript('[...document.querySelectorAll(".kutucuk")].find((k) => k.textContent.includes("Vikipedi")).querySelector(".kisayol-sil").click()');
+    await kosul(() => !u.veri.kisayollar().some((k) => k.ad === 'Vikipedi'), 3000, 'kısayolun kaldırılması');
   });
 
   await test('Sayfada bul eşleşmeleri sayar', async () => {
@@ -475,7 +561,6 @@ module.exports = async function arayuzTesti(u) {
   // --- Adres çubuğu: tek kelimeyle siteye gitme ---
   await test('Adres çubuğu: "youtube" yazınca youtube.com açılır, "?youtube" arar', async () => {
     await tikla('#yeni-sekme');
-    // yeni sekme sayfası yüklenince odağı kendi arama kutusuna alır; ondan sonra adres çubuğuna geç
     await kosul(async () => !aktifWc().isLoading() && (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
     await bekle(400);
     await tikla('#adres');

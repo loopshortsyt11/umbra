@@ -25,9 +25,23 @@ const VARSAYILAN_AYARLAR = {
   izleyiciEngelle: true,
   turboIndir: true,          // normal sekmelerdeki indirmeleri TurboIndir'e devret (gizli/Tor'da asla)
   aramaOnerileri: true,      // adres çubuğuna yazılanlar için DuckDuckGo arama önerileri (Tor sekmelerinde asla)
+  yerImiCubugu: true,        // adres çubuğunun altındaki yer işaretleri çubuğu (Ctrl+Shift+B)
 };
 
 const GECMIS_SINIRI = 10000;
+
+// Klasör adı: "cubuk", "diger" ya da kullanıcının verdiği ad (en fazla 60 karakter); geçersizse çubuk
+function temizKlasor(k) {
+  const ad = typeof k === 'string' ? k.trim().slice(0, 60) : '';
+  return ad || 'cubuk';
+}
+
+function kokenAl(url) {
+  try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.origin : ''; } catch { return ''; }
+}
+
+const KLASOR_ADLARI = { cubuk: 'Yer işaretleri çubuğu', diger: 'Diğer yer işaretleri' };
+const klasorAdi = (k) => KLASOR_ADLARI[k] || k;
 
 // Adres çubuğuna tek kelime yazıldığında (ör. "youtube") geçmişte yoksa gidilecek bilinen siteler
 const BILINEN_SITELER = {
@@ -86,6 +100,7 @@ class Veri {
     this.yerImiDeposu = d('yer-imleri.json', []);
     this.indirmeDeposu = d('indirilenler.json', []);
     this.oturumDeposu = d('oturum.json', []);
+    this.kisayolDeposu = d('kisayollar.json', { ozel: [], gizlenen: [] });
     // Kapanışta yarım kalan indirmeler "kesildi" sayılır
     for (const i of this.indirmeDeposu.veri) if (i.durum === 'iniyor') i.durum = 'kesildi';
   }
@@ -152,24 +167,92 @@ class Veri {
   }
 
   // --- Yer imleri ---
+  // Her yer iminin bir klasörü vardır: "cubuk" (yer işaretleri çubuğu), "diger" (diğer yer işaretleri) ya da
+  // kullanıcının verdiği bir ad. Klasör alanı olmayan eski kayıtlar çubukta sayılır.
   get yerImleri() { return this.yerImiDeposu.veri; }
   yerImiMi(url) { return this.yerImleri.some((y) => y.url === url); }
+  yerImiBul(url) { return this.yerImleri.find((y) => y.url === url) || null; }
+  klasoru(y) { return y.klasor || 'cubuk'; }
+  cubuktakiler() { return this.yerImleri.filter((y) => this.klasoru(y) === 'cubuk'); }
+
+  // Çubuk ve "diğer" her zaman vardır; diğer klasörler içlerinde yer imi olduğu sürece listelenir
+  klasorler() {
+    const ozel = [...new Set(this.yerImleri.map((y) => this.klasoru(y)))]
+      .filter((k) => k !== 'cubuk' && k !== 'diger').sort((a, b) => a.localeCompare(b, 'tr'));
+    return ['cubuk', 'diger', ...ozel];
+  }
+
+  yerImiEkle(url, baslik, klasor = 'cubuk') {
+    const mevcut = this.yerImiBul(url);
+    if (mevcut) return mevcut;
+    const y = { id: Date.now() + Math.random(), url, baslik: String(baslik || url).slice(0, 300), klasor: temizKlasor(klasor), zaman: Date.now() };
+    this.yerImleri.push(y);
+    this.yerImiDeposu.kaydet();
+    return y;
+  }
 
   yerImiDegistir(url, baslik) {
     const i = this.yerImleri.findIndex((y) => y.url === url);
-    if (i >= 0) this.yerImleri.splice(i, 1);
-    else this.yerImleri.push({ id: Date.now() + Math.random(), url, baslik: baslik || url, zaman: Date.now() });
-    this.yerImiDeposu.kaydet();
-    return i < 0;
+    if (i >= 0) { this.yerImleri.splice(i, 1); this.yerImiDeposu.kaydet(); return false; }
+    this.yerImiEkle(url, baslik);
+    return true;
   }
 
-  yerImiDuzenle(id, baslik, url) {
+  yerImiDuzenle(id, baslik, url, klasor) {
     const y = this.yerImleri.find((x) => x.id === id);
     if (!y || !/^https?:\/\//i.test(url)) return false;
-    y.baslik = String(baslik).slice(0, 300);
+    y.baslik = String(baslik).slice(0, 300) || url;
     y.url = url;
+    if (klasor !== undefined) y.klasor = temizKlasor(klasor);
     this.yerImiDeposu.kaydet();
     return true;
+  }
+
+  // --- Yeni sekme kısayolları: kullanıcının eklediği kısayollar + en çok ziyaret edilen siteler ---
+  get kisayolVerisi() { return this.kisayolDeposu.veri; }
+
+  kisayollar(adet = 10) {
+    const { ozel = [], gizlenen = [] } = this.kisayolVerisi;
+    const gizli = new Set(gizlenen);
+    const sonuc = ozel.filter((k) => !gizli.has(kokenAl(k.url))).map((k) => ({ ...k, ozel: true }));
+    const gorulen = new Set(sonuc.map((k) => kokenAl(k.url)));
+    // En çok ziyaret edilen siteler (kök adresine göre), son 90 günün geçmişinden; arama sayfaları sayılmaz
+    const sinir = Date.now() - 90 * 864e5;
+    const sayim = new Map();
+    for (const g of this.gecmis) {
+      if (g.zaman < sinir) continue;
+      const koken = kokenAl(g.url);
+      if (!koken || gizli.has(koken) || gorulen.has(koken) || /duckduckgo\.com|bing\.com\/search|google\.[a-z.]+\/search|search\.brave\.com/.test(g.url)) continue;
+      const s = sayim.get(koken) || { url: koken + '/', ad: '', sayi: 0 };
+      s.sayi++;
+      // Site adı başlıklarda genelde sondadır: "Video adı - YouTube" → "YouTube"
+      if (!s.ad && g.baslik) { const p = g.baslik.split(/ [-|–·] /); if (p.length > 1) s.ad = p[p.length - 1].trim().slice(0, 40); }
+      sayim.set(koken, s);
+    }
+    for (const s of [...sayim.values()].sort((a, b) => b.sayi - a.sayi)) {
+      if (sonuc.length >= adet) break;
+      sonuc.push({ url: s.url, ad: s.ad || new URL(s.url).hostname.replace(/^www\./, '') });
+    }
+    return sonuc.slice(0, adet);
+  }
+
+  kisayolEkle(ad, url) {
+    if (!/^https?:\/\//i.test(url)) return false;
+    const v = this.kisayolVerisi;
+    v.ozel = (v.ozel || []).filter((k) => k.url !== url);
+    v.ozel.push({ ad: String(ad || '').trim().slice(0, 40) || new URL(url).hostname.replace(/^www\./, ''), url });
+    v.gizlenen = (v.gizlenen || []).filter((k) => k !== kokenAl(url));
+    this.kisayolDeposu.kaydet();
+    return true;
+  }
+
+  // Kullanıcı kısayolu silinir; en çok ziyaret edilenlerden gelen site de bir daha önerilmez
+  kisayolKaldir(url) {
+    const v = this.kisayolVerisi;
+    v.ozel = (v.ozel || []).filter((k) => k.url !== url);
+    const koken = kokenAl(url);
+    if (koken && !(v.gizlenen || []).includes(koken)) v.gizlenen = [...(v.gizlenen || []), koken];
+    this.kisayolDeposu.kaydet();
   }
 
   yerImiSil(id) {
@@ -293,7 +376,7 @@ class Veri {
       for (const y of yedek.yerImleri.slice(0, 50000)) {
         if (!y || !adresMi(y.url) || mevcut.has(y.url)) continue;
         mevcut.add(y.url);
-        this.yerImleri.push({ id: Date.now() + Math.random(), url: y.url, baslik: metin(y.baslik, 300) || y.url, zaman: Number(y.zaman) || Date.now() });
+        this.yerImleri.push({ id: Date.now() + Math.random(), url: y.url, baslik: metin(y.baslik, 300) || y.url, klasor: temizKlasor(y.klasor), zaman: Number(y.zaman) || Date.now() });
         sayi.yerImleri++;
       }
       this.yerImiDeposu.kaydet();
@@ -320,10 +403,10 @@ class Veri {
   }
 
   hepsiniKaydet() {
-    for (const d of [this.ayarDeposu, this.gecmisDeposu, this.yerImiDeposu, this.indirmeDeposu, this.oturumDeposu]) {
+    for (const d of [this.ayarDeposu, this.gecmisDeposu, this.yerImiDeposu, this.indirmeDeposu, this.oturumDeposu, this.kisayolDeposu]) {
       if (d.zamanlayici) d.hemenKaydet();
     }
   }
 }
 
-module.exports = { Veri, ARAMA_MOTORLARI, OZEL_MOTORLAR, OZEL_BASLANGIC };
+module.exports = { Veri, ARAMA_MOTORLARI, OZEL_MOTORLAR, OZEL_BASLANGIC, klasorAdi };

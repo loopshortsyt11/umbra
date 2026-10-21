@@ -91,9 +91,8 @@ async function gecmisCiz() {
 
 // --- Yer imleri ---
 async function yerImleriCiz() {
-  const { yerImleri } = await ic.veri('yer-imleri');
-  const kart = el('div.kart');
-  for (const y of yerImleri) {
+  const { yerImleri, klasorler } = await ic.veri('yer-imleri');
+  const satirCiz = (y) => {
     const satir = el('div.satir');
     const normal = () => satir.replaceChildren(
       el('div.govde', {}, el('div.ust', {}, baglanti(y.url, y.baslik)), el('div.alt', {}, y.url)),
@@ -105,17 +104,23 @@ async function yerImleriCiz() {
     function duzenle() {
       const ad = el('input', { type: 'text', value: y.baslik, placeholder: 'Ad' });
       const adres = el('input', { type: 'text', value: y.url, placeholder: 'Adres' });
-      satir.replaceChildren(el('div.duzenle', {}, ad, adres,
-        el('button.birincil', { onclick: async () => { const s = await ic.eylem('yerimi-duzenle', y.id, ad.value, adres.value); if (s.tamam) yerImleriCiz(); else adres.focus(); } }, 'Kaydet'),
+      const klasor = el('select', { title: 'Klasör' }, klasorler.map(({ k, ad: kAd }) => el('option', { value: k, selected: k === y.klasor }, kAd)));
+      satir.replaceChildren(el('div.duzenle', {}, ad, adres, klasor,
+        el('button.birincil', { onclick: async () => { const s = await ic.eylem('yerimi-duzenle', y.id, ad.value, adres.value, klasor.value); if (s.tamam) yerImleriCiz(); else adres.focus(); } }, 'Kaydet'),
         el('button', { onclick: normal }, 'Vazgeç')));
       ad.focus();
     }
     normal();
-    kart.append(satir);
-  }
+    return satir;
+  };
+  // Chrome'daki gibi klasörlere göre: "Yer işaretleri çubuğu", "Diğer yer işaretleri" ve kullanıcının klasörleri
+  const bolumler = klasorler.map(({ k, ad }) => {
+    const ogeler = yerImleri.filter((y) => y.klasor === k);
+    return ogeler.length ? [el('h2.klasor-basligi', {}, '📁 ' + ad), el('div.kart', {}, ogeler.map(satirCiz))] : null;
+  });
   icerik.replaceChildren(el('div.kap', {},
     el('h1', {}, 'Yer imleri'),
-    yerImleri.length ? kart : el('p.bos', {}, 'Henüz yer imi yok. Bir sayfayı eklemek için adres çubuğundaki ☆ simgesine tıkla ya da Ctrl+D\'ye bas.'),
+    yerImleri.length ? bolumler.flat() : el('p.bos', {}, 'Henüz yer imi yok. Bir sayfayı eklemek için adres çubuğundaki ☆ simgesine tıkla ya da Ctrl+D\'ye bas.'),
   ));
 }
 
@@ -377,20 +382,57 @@ function aramaKutusu(deger, buyuk, yerTutucu, mod = '') {
   return { form, girdi };
 }
 
+// Yeni sekme (Chrome gibi): arama kutusunun altında yalnızca kısayollar durur — en çok girilen siteler ve
+// kullanıcının eklediği kısayollar. Yer işaretleri adres çubuğunun altındaki çubukta gösterilir.
+// İmleç arama kutusunda değil, adres çubuğunda yanıp söner (odak ana süreç tarafından verilir).
 async function yeniSekmeCiz() {
   const { kisayollar } = await ic.veri('ara');
-  const { form, girdi } = aramaKutusu('', true, 'Umbra ile ara veya adres yaz');
-  const kutucuklar = kisayollar.map((y) => el('a.kutucuk', {
-    href: '#', title: y.url,
-    onclick: (e) => { e.preventDefault(); ic.eylem('ac', y.url, e.ctrlKey); },
-  }, el('span.harf', {}, (kisaHost(y.url)[0] || '?').toUpperCase()), el('span.ad', {}, y.baslik || kisaHost(y.url))));
+  const { form } = aramaKutusu('', true, 'Umbra ile ara veya adres yaz');
+  const kutucuk = (k) => {
+    const host = kisaHost(k.url);
+    const harf = () => el('span.harf', {}, (k.ad || host || '?').trim().charAt(0).toUpperCase());
+    const simge = el('img.kisayol-simge', { src: 'https://icons.duckduckgo.com/ip3/' + new URL(k.url).hostname + '.ico', alt: '' });
+    simge.onerror = () => simge.replaceWith(harf());
+    return el('a.kutucuk', {
+      href: '#', title: k.url,
+      onclick: (e) => { e.preventDefault(); ic.eylem('ac', k.url, e.ctrlKey); },
+      onauxclick: (e) => { if (e.button === 1) { e.preventDefault(); ic.eylem('ac', k.url, true); } },
+    },
+    el('span.daire', {}, simge),
+    el('span.ad', {}, k.ad || host),
+    el('button.kisayol-sil', {
+      title: 'Kısayolu kaldır',
+      onclick: async (e) => { e.preventDefault(); e.stopPropagation(); await ic.eylem('kisayol-sil', k.url); yeniSekmeCiz(); },
+    }, '×'));
+  };
+  const ekleKutusu = el('div.kisayol-formu', { hidden: true });
+  const ekle = el('a.kutucuk.ekle', {
+    href: '#', title: 'Kısayol ekle',
+    onclick: (e) => {
+      e.preventDefault();
+      const ad = el('input', { placeholder: 'Ad', maxLength: 40 });
+      const url = el('input', { placeholder: 'URL (ör. youtube.com)', spellcheck: false });
+      const hata = el('span.hata', {});
+      const kaydet = async () => {
+        const r = await ic.eylem('kisayol-ekle', ad.value, url.value.trim());
+        if (r && r.tamam) yeniSekmeCiz(); else hata.textContent = 'Geçerli bir adres yazın';
+      };
+      const enter = (ev) => { if (ev.key === 'Enter') kaydet(); else if (ev.key === 'Escape') ekleKutusu.hidden = true; };
+      ad.onkeydown = enter; url.onkeydown = enter;
+      ekleKutusu.replaceChildren(el('b', {}, 'Kısayol ekle'), ad, url, hata,
+        el('div.dugmeler', {}, el('button', { onclick: () => { ekleKutusu.hidden = true; } }, 'İptal'),
+          el('button.birincil', { onclick: kaydet }, 'Bitti')));
+      ekleKutusu.hidden = false;
+      ad.focus();
+    },
+  }, el('span.daire', {}, el('span.arti', {}, '+')), el('span.ad', {}, 'Kısayol ekle'));
   icerik.replaceChildren(el('div.yeni-sekme', {},
     el('img.buyuk-logo', { src: 'logo.png', alt: '' }),
     el('h1.marka', {}, 'Umbra'),
     form,
-    kutucuklar.length ? el('div.kutucuklar', {}, kutucuklar) : null,
+    el('div.kutucuklar', {}, ...kisayollar.map(kutucuk), kisayollar.length < 10 ? ekle : null),
+    ekleKutusu,
   ));
-  girdi.focus();
 }
 
 // Google'daki gibi arama türü sekmeleri. Tümü, Görseller, Videolar, Haberler ve AI Modu Umbra'nın kendi
