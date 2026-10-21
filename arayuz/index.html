@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:">
+  <title>Umbra</title>
+  <link rel="stylesheet" href="stil.css">
+</head>
+<body>
+  <div id="ust">
+    <div id="sekmeler">
+      <div id="sekme-listesi"></div>
+      <button id="yeni-sekme" class="ikon" title="Yeni sekme (Ctrl+T)">+</button>
+      <button id="yeni-gizli" class="ikon" title="Yeni gizli sekme (Ctrl+Shift+N)">🕶</button>
+      <button id="yeni-tor" class="ikon" title="Yeni Tor sekmesi — IP adresinizi gizler (Ctrl+Shift+U)">🧅</button>
+    </div>
+    <div id="arac-cubugu">
+      <button id="geri" class="ikon" title="Geri (Alt+Sol)">←</button>
+      <button id="ileri" class="ikon" title="İleri (Alt+Sağ)">→</button>
+      <button id="yenile" class="ikon" title="Yenile (F5)">↻</button>
+      <button id="ana" class="ikon" title="Ana sayfa">⌂</button>
+      <form id="adres-formu">
+        <span id="kilit" title=""></span>
+        <input id="adres" spellcheck="false" autocomplete="off" placeholder="Ara veya adres yaz">
+        <button type="button" id="yildiz" class="ikon kucuk" title="Yer imlerine ekle (Ctrl+D)">☆</button>
+      </form>
+      <span id="koruma" title="Engellenen izleyici sayısı">🛡 <b id="sayac">0</b></span>
+      <button id="medya" class="ikon" title="TurboDownloader ile indir" hidden>⚡<b id="medya-sayi"></b></button>
+      <button id="indirme" class="ikon" title="İndirilenler (Ctrl+J)" hidden><span id="indirme-ok">⬇</span><span id="indirme-cubuk"></span></button>
+      <button id="guncelle" title="Yeni sürüm indirildi — yeniden başlatıp güncelle" hidden>⟳ Güncelle</button>
+      <button id="ai" class="ikon" title="Umbra AI (Alt+A)">✨</button>
+      <button id="menu" class="ikon" title="Menü">⋮</button>
+
+      <form id="bul" hidden>
+        <input id="bul-metin" spellcheck="false" autocomplete="off" placeholder="Sayfada bul">
+        <span id="bul-sonuc"></span>
+        <button type="button" id="bul-onceki" class="ikon kucuk" title="Önceki (Shift+Enter)">˄</button>
+        <button type="button" id="bul-sonraki" class="ikon kucuk" title="Sonraki (Enter)">˅</button>
+        <button type="button" id="bul-kapat" class="ikon kucuk" title="Kapat (Esc)">×</button>
+      </form>
+    </div>
+  </div>
+  <div id="oneriler" hidden></div>
+  <script src="arayuz.js"></script>
+</body>
+</html>

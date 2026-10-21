@@ -1,0 +1,1339 @@
+'use strict';
+const { app, BaseWindow, WebContentsView, ipcMain, session, dialog, Menu, clipboard, shell } = require('electron');
+const fs = require('fs');
+const path = require('path');
+const { Tor } = require('./tor');
+const { Asistan } = require('./ai');
+const { Veri, ARAMA_MOTORLARI, OZEL_MOTORLAR, OZEL_BASLANGIC } = require('./veri');
+const { TurboIndir } = require('./turboindir');
+const { Guncelleyici } = require('./guncelleme');
+
+const UI_YUKSEKLIK = 82;
+const PANEL_GENISLIK = 400;
+const TOR_KOK = app.isPackaged ? path.join(process.resourcesPath, 'tor-paket') : path.join(__dirname, 'tor-paket');
+const SIMGE = path.join(__dirname, 'arayuz', 'simge.png');
+const TURLER = ['normal', 'gizli', 'tor'];
+const IC_SAYFALAR = ['ara', 'gecmis', 'yer-imleri', 'indirilenler', 'ayarlar'];
+// Tor hazır olana kadar Tor sekmelerinin trafiği kapalı bir porta gider: bağlantı yoksa sayfa da açılmaz
+const KAPALI_PROXY = { proxyRules: 'socks5://127.0.0.1:9', proxyBypassRules: '<-loopback>' };
+const YONTEM_ADLARI = { dogrudan: 'doğrudan', obfs4: 'obfs4 köprüsü', snowflake: 'Snowflake köprüsü', meek: 'meek köprüsü' };
+
+// Reklam/izleyici alan adları (alt alan adları da engellenir)
+const IZLEYICILER = [
+  'doubleclick.net', 'googlesyndication.com', 'google-analytics.com', 'googletagmanager.com',
+  'googleadservices.com', 'adservice.google.com', 'connect.facebook.net', 'scorecardresearch.com',
+  'adnxs.com', 'criteo.com', 'criteo.net', 'taboola.com', 'outbrain.com', 'hotjar.com',
+  'amazon-adsystem.com', 'ads-twitter.com', 'analytics.tiktok.com', 'quantserve.com', 'moatads.com',
+  'pubmatic.com', 'rubiconproject.com', 'openx.net', 'mc.yandex.ru', 'clarity.ms', 'adform.net',
+  'smartadserver.com', 'casalemedia.com', 'yieldmo.com', 'bidswitch.net', 'mathtag.com',
+];
+
+const OTOMATIK_IZINLER = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock']);
+const SORULAN_IZINLER = {
+  media: 'kamera / mikrofon',
+  geolocation: 'konumunuz',
+  notifications: 'bildirim göndermek',
+  'clipboard-read': 'panonuzu okumak',
+};
+const RISKLI_DOSYA = /\.(exe|msi|bat|cmd|com|scr|ps1|vbs|vbe|js|jse|wsf|hta|jar|lnk|reg|dll)$/i;
+
+app.enableSandbox();
+app.commandLine.appendSwitch('site-per-process');
+
+// Otomatik derleme hattının duman testi: arayüz ve ilk sekme sorunsuz yüklenirse 0, aksi halde 1 ile çıkar
+const DUMAN_TESTI = process.argv.includes('--duman-testi');
+const ARAYUZ_TESTI = !app.isPackaged && process.argv.includes('--arayuz-testi'); // yalnızca geliştirme sürümünde
+if (ARAYUZ_TESTI) app.setPath('userData', path.join(app.getPath('temp'), `umbra-arayuz-testi-${process.pid}`));
+if (DUMAN_TESTI) {
+  // Kullanıcının verilerine dokunmamak ve açık bir Umbra'yla çakışmamak için geçici veri klasörü
+  app.setPath('userData', path.join(app.getPath('temp'), `umbra-duman-${process.pid}`));
+  process.on('uncaughtException', (h) => { console.error('DUMAN TESTİ HATASI', h); app.exit(1); });
+  setTimeout(() => { console.error('DUMAN TESTİ: zaman aşımı'); app.exit(1); }, 60000);
+}
+
+// Tarayıcının eski adı "Kalkan" idi: o adla kaydedilmiş veriler (geçmiş, çerezler, AI anahtarı) bir kez yeni klasöre taşınır
+if (!DUMAN_TESTI && !ARAYUZ_TESTI) {
+  const yeni = app.getPath('userData');
+  const eski = path.join(app.getPath('appData'), 'Kalkan');
+  // Electron yeni klasörü açılışta boş olarak oluşturabildiği için ölçüt, Umbra'nın kendi ayar dosyasının henüz olmamasıdır
+  if (fs.existsSync(eski) && !fs.existsSync(path.join(yeni, 'ayarlar.json'))) {
+    try {
+      fs.mkdirSync(yeni, { recursive: true });
+      for (const ad of fs.readdirSync(eski)) {
+        const hedef = path.join(yeni, ad);
+        fs.rmSync(hedef, { recursive: true, force: true }); // açılışta oluşan boş kopyanın yerine eskisi geçer
+        fs.renameSync(path.join(eski, ad), hedef);
+      }
+      fs.rmSync(eski, { recursive: true, force: true });
+      const bolumler = path.join(yeni, 'Partitions');
+      if (fs.existsSync(path.join(bolumler, 'kalkan'))) {
+        fs.rmSync(path.join(bolumler, 'umbra'), { recursive: true, force: true });
+        fs.renameSync(path.join(bolumler, 'kalkan'), path.join(bolumler, 'umbra'));
+      }
+      const oturum = path.join(yeni, 'oturum.json');
+      if (fs.existsSync(oturum)) fs.writeFileSync(oturum, fs.readFileSync(oturum, 'utf8').replaceAll('kalkan://', 'umbra://'));
+    } catch (h) {
+      console.error('Eski Kalkan verileri taşınamadı', h);
+    }
+  }
+}
+
+if (!app.requestSingleInstanceLock()) app.quit();
+
+let pencere, arayuz, normalOturum, tor, asistan, veri, turbo;
+const guncelleyici = new Guncelleyici();
+const turboAtla = new Set();           // TurboDownloader'a gönderilemeyip Umbra'ya geri verilen adresler
+let panel = null, panelAcik = false, sonPanelTuru = null;
+let arayuzEk = 0; // adres önerileri açıkken arayüzün sayfanın üstüne taşan yüksekliği
+const oturumlar = { gizli: null, tor: null }; // bellekte tutulan, son sekme kapanınca silinen oturumlar
+let torDurum = { yuzde: 0, yontem: '' };
+let aktifId = null, sayac = 0, tamEkran = false, guncellemeZamanlayici = null, kapaniyor = false;
+const sekmeler = new Map();
+const kapatilanlar = [];               // Ctrl+Shift+T için yalnızca normal sekmelerin adresleri
+const engellenen = new Map();          // webContents.id -> engellenen istek sayısı
+const httpIzinli = new Set();          // kullanıcının şifresiz açmayı onayladığı alan adları
+const yukseltilen = new Set();         // http -> https yükseltilen ana sayfa alan adları
+const izinKararlari = new Map();       // "oturum|köken|izin" -> true/false
+const canliIndirmeler = new Map();     // indirme id -> DownloadItem
+const geciciIndirmeler = [];           // gizli/Tor sekmelerinden indirilenler: diske kaydedilmez
+
+const izleyiciMi = (host) => IZLEYICILER.some((d) => host === d || host.endsWith('.' + d));
+const yerelMi = (host) => host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+const webAdresiMi = (url) => /^https?:\/\//i.test(url);
+const googleGirisMi = (url) => /^https:\/\/accounts\.google\.com(\/|$)/i.test(url);
+// Orijinal marka listesi korunur, başına Chromium sürümüyle "Google Chrome" eklenir (sayfa içindeki listeyle aynı sıra)
+function chromeMarkasiEkle(deger) {
+  const m = /"Chromium";v="([^"]+)"/.exec(deger || '');
+  return !m || /"Google Chrome"/.test(deger) ? deger : `"Google Chrome";v="${m[1]}", ${deger}`;
+}
+
+function icSayfa(url) {
+  const m = /^umbra:\/\/([\w-]+)\/?(\?.*)?$/i.exec(String(url || '').trim());
+  return m && IC_SAYFALAR.includes(m[1].toLowerCase()) ? m[1].toLowerCase() : null;
+}
+
+// umbra://ara?q=... adresindeki arama sorgusu
+function icSorgu(url) {
+  const m = /\?(.*)$/.exec(String(url || '').trim());
+  return m ? (new URLSearchParams(m[1]).get('q') || '').trim().slice(0, 500) : '';
+}
+
+function icYukle(wc, sayfa, sorgu) {
+  wc.loadFile(path.join(__dirname, 'ic', 'index.html'), { hash: sayfa, ...(sorgu ? { query: { q: sorgu } } : {}) });
+}
+
+function kokeni(url) {
+  try { return new URL(url).origin; } catch { return url; }
+}
+
+function temizUserAgent(ua) {
+  return ua.split(' ').filter((t) => !/^(Electron|Umbra|umbra)\//.test(t)).join(' ');
+}
+
+function benzersizYol(klasor, ad) {
+  const uzanti = path.extname(ad);
+  const govde = path.basename(ad, uzanti) || 'indirilen';
+  let yol = path.join(klasor, govde + uzanti);
+  for (let n = 1; fs.existsSync(yol); n++) yol = path.join(klasor, `${govde} (${n})${uzanti}`);
+  return yol;
+}
+
+function sertlestir(ses, etiket) {
+  // Dil listesi gerçek Chrome'daki gibi; Tor sekmelerinde parmak izini azaltmak için Tor Browser gibi yalnızca İngilizce
+  ses.setUserAgent(temizUserAgent(ses.getUserAgent()), etiket === 'tor' ? 'en-US,en' : 'tr-TR,tr,en-US,en');
+  ses.setSpellCheckerEnabled(false);
+
+  // Google, giriş sayfasında marka listesinde "Google Chrome" (ya da bilinen başka bir tarayıcı) olmayan Chromium
+  // tarayıcılarını "güvenli olmayabilir" diye reddeder. Umbra'nın motoru zaten Chromium olduğu için yalnızca o sayfada
+  // marka listesine Chrome'un adı eklenir; motor ve söylenen kimlik tutarlı kalır.
+  ses.webRequest.onBeforeSendHeaders((ayr, cb) => {
+    if (!googleGirisMi(ayr.url)) return cb({});
+    const basliklar = { ...ayr.requestHeaders };
+    for (const ad of Object.keys(basliklar)) {
+      if (/^sec-ch-ua(-full-version-list)?$/i.test(ad)) basliklar[ad] = chromeMarkasiEkle(basliklar[ad]);
+    }
+    cb({ requestHeaders: basliklar });
+  });
+
+  ses.webRequest.onBeforeRequest((ayr, cb) => {
+    let u;
+    try { u = new URL(ayr.url); } catch { return cb({}); }
+    if (ayr.resourceType !== 'mainFrame' && veri.ayarlar.izleyiciEngelle && izleyiciMi(u.hostname)) {
+      engellenen.set(ayr.webContentsId, (engellenen.get(ayr.webContentsId) || 0) + 1);
+      arayuzuGuncelle();
+      return cb({ cancel: true });
+    }
+    // .onion adresleri Tor içinde zaten uçtan uca şifrelidir, https'e yükseltilmez
+    if (u.protocol === 'http:' && !yerelMi(u.hostname) && !u.hostname.endsWith('.onion') && !httpIzinli.has(u.hostname)) {
+      if (ayr.resourceType === 'mainFrame') yukseltilen.add(u.hostname);
+      u.protocol = 'https:';
+      return cb({ redirectURL: u.toString() });
+    }
+    cb({});
+  });
+
+  ses.setPermissionRequestHandler(async (wc, izin, cb, ayr) => {
+    if (OTOMATIK_IZINLER.has(izin)) return cb(true);
+    if (!SORULAN_IZINLER[izin]) return cb(false);
+    const koken = kokeni(ayr.requestingUrl || wc.getURL());
+    const anahtar = `${etiket}|${koken}|${izin}`;
+    if (izinKararlari.has(anahtar)) return cb(izinKararlari.get(anahtar));
+    const { response, checkboxChecked } = await dialog.showMessageBox(pencere, {
+      type: 'question',
+      title: 'İzin isteği',
+      message: `${koken} şuna erişmek istiyor: ${SORULAN_IZINLER[izin]}`,
+      buttons: ['İzin verme', 'İzin ver'],
+      defaultId: 0,
+      cancelId: 0,
+      checkboxLabel: 'Bu site için kararımı hatırla',
+    });
+    const karar = response === 1;
+    if (checkboxChecked) izinKararlari.set(anahtar, karar);
+    cb(karar);
+  });
+  ses.setPermissionCheckHandler((_wc, izin, koken) =>
+    OTOMATIK_IZINLER.has(izin) || izinKararlari.get(`${etiket}|${koken}|${izin}`) === true);
+  ses.setDevicePermissionHandler(() => false); // USB / HID / seri port erişimi kapalı
+
+  // TurboDownloader için sayfadaki video/ses akışlarını yakala (yalnızca normal oturum)
+  if (etiket === 'normal') {
+    ses.webRequest.onHeadersReceived((ayr, cb) => {
+      if (turbo.yanitIncele(ayr)) arayuzuGuncelle();
+      cb({});
+    });
+  }
+
+  ses.on('will-download', (e, item, wc) => {
+    const ad = item.getFilename();
+    const url = item.getURL();
+    if (RISKLI_DOSYA.test(ad)) {
+      const secim = dialog.showMessageBoxSync(pencere, {
+        type: 'warning',
+        title: 'Riskli dosya',
+        message: `"${ad}" bilgisayarınızda çalıştırılabilen bir dosya.`,
+        detail: `Kaynak: ${kokeni(item.getURL())}\nYalnızca güvendiğiniz kaynaklardan indirin.`,
+        buttons: ['İptal', 'Yine de indir'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (secim !== 1) return item.cancel();
+    }
+    // TurboDownloader gerçek IP ile indirir: yalnızca normal oturumda ve uygulama açıkken devredilir
+    if (etiket === 'normal' && veri.ayarlar.turboIndir && turboKullanilabilir() && webAdresiMi(url) && !turboAtla.has(url)) {
+      e.preventDefault();
+      const referer = wc && !wc.isDestroyed() ? wc.getURL() : '';
+      turbo.gonder(ses, { url, referer, filename: ad })
+        .then(() => turboKaydi(ad, url))
+        .catch(() => {
+          // Uygulamaya ulaşılamadı: indirmeyi Umbra'nın kendisine geri ver
+          turboAtla.add(url);
+          const hedef = wc && !wc.isDestroyed() ? wc : aktifWc();
+          hedef?.downloadURL(url);
+        });
+      return;
+    }
+    turboAtla.delete(url);
+    item.setSavePath(benzersizYol(app.getPath('downloads'), ad));
+    indirmeyiIzle(item, etiket !== 'normal');
+  });
+}
+
+// --- İndirmeler ---
+let indirmeZamanlayici = null;
+function indirmeDegisti() {
+  if (indirmeZamanlayici) return;
+  indirmeZamanlayici = setTimeout(() => {
+    indirmeZamanlayici = null;
+    arayuzuGuncelle();
+    icSayfalaraBildir('indirilenler');
+  }, 250);
+}
+
+function tumIndirmeler() {
+  return [...geciciIndirmeler, ...veri.indirilenler].sort((a, b) => b.zaman - a.zaman);
+}
+
+function indirmeyiIzle(item, gecici) {
+  const yol = item.getSavePath();
+  const kayit = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    dosya: path.basename(yol), yol, url: item.getURL(),
+    boyut: item.getTotalBytes(), alinan: 0, durum: 'iniyor', zaman: Date.now(), gecici,
+  };
+  (gecici ? geciciIndirmeler : veri.indirilenler).unshift(kayit);
+  canliIndirmeler.set(kayit.id, item);
+  item.on('updated', () => {
+    kayit.alinan = item.getReceivedBytes();
+    kayit.boyut = item.getTotalBytes();
+    kayit.duraklatildi = item.isPaused();
+    indirmeDegisti();
+  });
+  item.once('done', (_e, durum) => {
+    kayit.alinan = item.getReceivedBytes();
+    kayit.durum = durum === 'completed' ? 'tamam' : durum === 'cancelled' ? 'iptal' : 'hata';
+    canliIndirmeler.delete(kayit.id);
+    if (!gecici) veri.indirmeKaydet();
+    indirmeDegisti();
+  });
+  if (!gecici) veri.indirmeKaydet();
+  indirmeDegisti();
+}
+
+function turboKaydi(ad, url) {
+  veri.indirilenler.unshift({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    dosya: ad, yol: '', url, boyut: 0, alinan: 0, durum: 'turbo', zaman: Date.now(),
+  });
+  veri.indirmeKaydet();
+  indirmeDegisti();
+}
+
+// TurboDownloader açıksa ya da bu bilgisayarda kuruluysa (kapalıysa ilk kullanımda başlatılır) kullanılabilir
+const turboKullanilabilir = () => turbo.acik || turbo.kurulu();
+// Video üstündeki "İndir ▼" düğmesi: kullanıcı ayarı açık ve TurboDownloader kullanılabilirse görünür
+const turboDugmesiEtkin = () => veri.ayarlar.turboIndir && turboKullanilabilir();
+
+function turboHatasi(h) {
+  dialog.showMessageBox(pencere, {
+    type: 'error', title: 'TurboDownloader',
+    message: 'İndirme TurboDownloader\'a gönderilemedi.',
+    detail: `${h.message}\nTurboDownloader kurulu değilse veya açılamıyorsa indirmeyi Umbra'nın kendi indiricisiyle yapabilirsin.`,
+  });
+}
+
+// Sağ tık / medya menüsünden TurboDownloader'a gönderim; yalnızca normal sekmelerden çağrılır
+async function turboyaGonder(s, secenek, kayitAdi) {
+  if (!s || s.tur !== 'normal') return;
+  try {
+    await turbo.gonder(s.view.webContents.session, secenek);
+    turboKaydi(kayitAdi, secenek.url || secenek.pageUrl);
+  } catch (h) {
+    turboHatasi(h);
+  }
+}
+
+// Sayfanın videosu/sesi (kalite seçimiyle ya da en iyi kalitede)
+async function turboSayfaGonder(s, { mode = 'video', quality = 0, source = '', src = '' } = {}) {
+  if (!s || s.tur !== 'normal') throw new Error('yalnızca normal sekmelerde kullanılabilir');
+  const wc = s.view.webContents;
+  const sayfa = wc.getURL();
+  if (!webAdresiMi(sayfa)) throw new Error('bu sayfa indirilemez');
+  await turbo.sayfaGonder(wc.session, wc.id, sayfa, { mode, quality, source, src });
+  turboKaydi(`${mode === 'audio' ? 'MP3' : 'Video'}${quality ? ` (${quality}${mode === 'audio' ? ' kbps' : 'p'})` : ''}: ${wc.getTitle() || sayfa}`, source || sayfa);
+}
+
+// Kalite listesini TurboDownloader'dan alıp seçim menüsü gösterir (yt-dlp çözümlemesi birkaç saniye sürebilir)
+async function kaliteMenusu(s, konum) {
+  if (!s || s.tur !== 'normal') return;
+  const wc = s.view.webContents;
+  const goster = (ogeler) => Menu.buildFromTemplate(ogeler).popup({ window: pencere, ...(konum || {}) });
+  const dene = (secenek) => () => turboSayfaGonder(s, secenek).catch(turboHatasi);
+  const veriler = await turbo.formatlar(wc.session, wc.id, wc.getURL());
+  if (veriler.error || !Array.isArray(veriler.options)) {
+    return goster([
+      { label: `Kaliteler alınamadı: ${String(veriler.error || 'bilinmeyen yanıt').slice(0, 80)}`, enabled: false },
+      { type: 'separator' },
+      { label: 'En iyi kalitede dene', click: dene({ mode: 'video', quality: 0 }) },
+      { label: 'MP3 olarak dene', click: dene({ mode: 'audio', quality: 320 }) },
+    ]);
+  }
+  const boyut = (b) => (b ? `   ~${b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : Math.round(b / 1048576) + ' MB'}` : '');
+  const ogeler = [{ label: String(veriler.title || wc.getTitle()).slice(0, 70), enabled: false }];
+  const videolar = veriler.options.filter((o) => o.kind === 'video');
+  const sesler = veriler.options.filter((o) => o.kind === 'audio');
+  if (videolar.length) {
+    ogeler.push({ type: 'separator' }, { label: 'Video (MP4)', enabled: false });
+    for (const o of videolar) ogeler.push({ label: `${o.label}${boyut(o.size)}`, click: dene({ mode: 'video', quality: o.q, source: veriler.source }) });
+  }
+  if (sesler.length) {
+    ogeler.push({ type: 'separator' }, { label: 'Ses', enabled: false });
+    for (const o of sesler) ogeler.push({ label: `${o.label}${boyut(o.size)}`, click: dene({ mode: 'audio', quality: o.q, source: veriler.source }) });
+  }
+  goster(ogeler);
+}
+
+function turboMenuOgeleri(s, p, konum) {
+  if (!s || s.tur !== 'normal' || !turboKullanilabilir()) return [];
+  const wc = s.view.webContents;
+  const sayfa = p?.frameURL || wc.getURL();
+  if (!webAdresiMi(sayfa)) return [];
+  const ogeler = [];
+  if (p?.linkURL && webAdresiMi(p.linkURL)) {
+    ogeler.push(
+      { label: '⚡ TurboDownloader ile indir', click: () => turboyaGonder(s, { url: p.linkURL, referer: sayfa }, p.linkURL.split('/').pop() || p.linkURL) },
+      { label: '⚡ Bağlantıyı MP3 olarak indir', click: () => turboyaGonder(s, { url: p.linkURL, pageUrl: p.linkURL, mode: 'audio', referer: sayfa }, 'MP3: ' + p.linkURL) },
+    );
+  }
+  if (['video', 'audio', 'image'].includes(p?.mediaType) && webAdresiMi(p.srcURL)) {
+    ogeler.push({ label: '⚡ Bu medyayı TurboDownloader ile indir', click: () => turboyaGonder(s, { url: p.srcURL, referer: sayfa, mediaHint: true }, p.srcURL.split('/').pop() || p.srcURL) });
+  }
+  ogeler.push(
+    { label: '⚡ Bu sayfanın videosunu indir (kalite seç…)', click: () => kaliteMenusu(s, konum) },
+    { label: '⚡ Bu sayfanın videosunu en iyi kalitede indir', click: () => turboSayfaGonder(s, { mode: 'video' }).catch(turboHatasi) },
+    { label: '⚡ Bu sayfanın sesini MP3 indir', click: () => turboSayfaGonder(s, { mode: 'audio', quality: 320 }).catch(turboHatasi) },
+  );
+  return ogeler;
+}
+
+function medyaMenusu(x, y) {
+  const s = aktifSekme();
+  const ogeler = turboMenuOgeleri(s, null, { x: Math.round(x), y: Math.round(y) });
+  if (!ogeler.length) return;
+  const sayfa = s.view.webContents.getURL();
+  const liste = turbo.medyaListesi(s.view.webContents.id);
+  if (liste.length) ogeler.push({ type: 'separator' }, { label: 'Yakalanan medya', enabled: false });
+  const kb = (b) => (b ? ` · ${(b / 1048576).toFixed(1)} MB` : '');
+  for (const m of liste.slice(0, 15)) {
+    ogeler.push({
+      label: `${m.tur === 'ses' ? '♪' : m.tur === 'akış' ? '📡' : '🎞'} ${m.ad.slice(0, 60)}${kb(m.boyut)}`,
+      submenu: [
+        {
+          label: 'İndir',
+          click: () => turboyaGonder(s, m.tur === 'akış'
+            ? { url: m.url, pageUrl: m.url, mode: 'video', referer: sayfa }
+            : { url: m.url, referer: sayfa, mediaHint: true }, m.ad),
+        },
+        { label: 'MP3 olarak indir', click: () => turboyaGonder(s, { url: m.url, pageUrl: m.url, mode: 'audio', referer: sayfa }, 'MP3: ' + m.ad) },
+      ],
+    });
+  }
+  ogeler.push({ type: 'separator' }, { label: 'TurboDownloader penceresini aç', click: () => turbo.goster().catch(() => {}) });
+  Menu.buildFromTemplate(ogeler).popup({ window: pencere, x: Math.round(x), y: Math.round(y) });
+}
+
+async function indirmeEylemi(eylem, id) {
+  const kayit = tumIndirmeler().find((i) => i.id === id);
+  if (!kayit) return;
+  if (eylem === 'iptal') canliIndirmeler.get(id)?.cancel();
+  else if (eylem === 'klasor') shell.showItemInFolder(kayit.yol);
+  else if (eylem === 'ac' && kayit.durum === 'tamam') {
+    if (!fs.existsSync(kayit.yol)) return { hata: 'Dosya taşınmış veya silinmiş.' };
+    if (RISKLI_DOSYA.test(kayit.yol)) {
+      const { response } = await dialog.showMessageBox(pencere, {
+        type: 'warning', title: 'Dosyayı çalıştır',
+        message: `"${kayit.dosya}" bir program. Çalıştırmak istediğinizden emin misiniz?`,
+        detail: `Kaynak: ${kokeni(kayit.url)}`,
+        buttons: ['Vazgeç', 'Çalıştır'], defaultId: 0, cancelId: 0,
+      });
+      if (response !== 1) return;
+    }
+    const hata = await shell.openPath(kayit.yol);
+    if (hata) return { hata };
+  } else if (eylem === 'sil') {
+    canliIndirmeler.get(id)?.cancel();
+    const liste = kayit.gecici ? geciciIndirmeler : veri.indirilenler;
+    liste.splice(liste.indexOf(kayit), 1);
+    if (!kayit.gecici) veri.indirmeKaydet();
+  }
+  indirmeDegisti();
+}
+
+// --- Oturumlar ---
+function oturumAl(tur) {
+  if (tur === 'normal') return normalOturum;
+  if (!oturumlar[tur]) {
+    // "persist:" öneki olmadığı için her şey yalnızca bellekte tutulur
+    const ses = session.fromPartition(`${tur}-${Date.now()}`);
+    sertlestir(ses, tur);
+    if (tur === 'tor') ses.setProxy(KAPALI_PROXY);
+    oturumlar[tur] = ses;
+  }
+  return oturumlar[tur];
+}
+
+function oturumuTemizle(tur) {
+  const ses = oturumlar[tur];
+  if (!ses) return;
+  ses.clearStorageData();
+  ses.clearCache();
+  for (const k of izinKararlari.keys()) if (k.startsWith(tur + '|')) izinKararlari.delete(k);
+  geciciIndirmeler.splice(0, geciciIndirmeler.length, ...geciciIndirmeler.filter((i) => i.durum === 'iniyor'));
+  oturumlar[tur] = null;
+}
+
+async function toraHazirla(ses) {
+  const port = await tor.baglan();
+  await ses.setProxy({ proxyRules: `socks5://127.0.0.1:${port}`, proxyBypassRules: '<-loopback>' });
+}
+
+function bilgiSayfasi(baslik, aciklama) {
+  const html = `<!doctype html><meta charset="utf-8"><title>${baslik}</title>
+<style>body{font:16px system-ui;background:#16302b;color:#e6f2ee;display:grid;place-items:center;height:90vh;margin:0}
+div{max-width:560px;padding:24px;text-align:center}.d{width:36px;height:36px;margin:0 auto 20px;border:4px solid #ffffff33;
+border-top-color:#7ee2c4;border-radius:50%;animation:r 1s linear infinite}@keyframes r{to{transform:rotate(360deg)}}</style>
+<div><div class="d"></div><h1 style="font-size:22px">${baslik}</h1><p>${aciklama}</p></div>`;
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+}
+
+function hataSayfasi(baslik, aciklama) {
+  const kac = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const html = `<!doctype html><meta charset="utf-8"><title>${kac(baslik)}</title>
+<style>body{font:16px system-ui;background:#f4f5f7;color:#222;display:grid;place-items:center;height:90vh;margin:0}
+div{max-width:560px;padding:24px}h1{font-size:22px}code{color:#b42318}</style>
+<div><h1>${kac(baslik)}</h1><p>${kac(aciklama)}</p></div>`;
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+}
+
+function adreseCevir(girdi, tur = 'normal') {
+  const t = String(girdi || '').trim();
+  if (!t) return null;
+  if (webAdresiMi(t)) return t;
+  if (icSayfa(t)) return t;
+  if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/.*)?$/i.test(t)) return 'http://' + t;
+  if (!/\s/.test(t) && /^[^/\s]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(t)) return 'https://' + t;
+  return veri.aramaAdresi(t, tur);
+}
+
+function aktifSekme() {
+  return sekmeler.get(aktifId);
+}
+
+function aktifWc() {
+  return aktifSekme()?.view.webContents;
+}
+
+function sekmeAdresi(s) {
+  if (s.tur === 'ic') return `umbra://${s.icSayfa}${s.icSorgu ? '?' + new URLSearchParams({ q: s.icSorgu }) : ''}`;
+  if (s.torBekliyor) return '';
+  const gercek = s.view.webContents.getURL();
+  if (gercek.startsWith('file:')) return ''; // gizli/Tor başlangıç sayfasında adres çubuğu boş kalır
+  if (!gercek) return s.istenenAdres || ''; // henüz yüklenmemiş (ör. arka planda açılmış) sekme
+  return s.hataAdresi && gercek.startsWith('data:') ? s.hataAdresi : gercek;
+}
+
+function yerlesim() {
+  if (!pencere) return;
+  const { width, height } = pencere.getContentBounds();
+  const ust = tamEkran ? 0 : UI_YUKSEKLIK;
+  const panelG = panelAcik && !tamEkran ? Math.min(PANEL_GENISLIK, Math.floor(width / 2)) : 0;
+  if (panel) panel.setBounds({ x: width - panelG, y: ust, width: panelG, height: Math.max(0, height - ust) });
+  const s = aktifSekme();
+  if (s) s.view.setBounds({ x: 0, y: ust, width: width - panelG, height: Math.max(0, height - ust) });
+  arayuz.setBounds({ x: 0, y: 0, width, height: tamEkran ? 0 : Math.min(height, UI_YUKSEKLIK + arayuzEk) });
+  // Öneri listesi açıkken arayüz, sayfanın üstüne çıkabilmesi için en öne alınır
+  if (arayuzEk) pencere.contentView.addChildView(arayuz);
+}
+
+// --- AI paneli ---
+function panelAc(ac = !panelAcik) {
+  panelAcik = ac;
+  if (ac && !panel) {
+    panel = new WebContentsView({
+      webPreferences: {
+        preload: path.join(__dirname, 'panel', 'preload.js'),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        spellcheck: false,
+      },
+    });
+    panel.webContents.loadFile(path.join(__dirname, 'panel', 'index.html'));
+    panel.webContents.on('did-finish-load', () => { sonPanelTuru = null; arayuzuGuncelle(); });
+  }
+  if (panel) {
+    if (ac) pencere.contentView.addChildView(panel);
+    else pencere.contentView.removeChildView(panel);
+  }
+  yerlesim();
+  if (ac) panel.webContents.focus();
+  else aktifWc()?.focus();
+  arayuzuGuncelle();
+}
+
+// Panel açıksa soruyu hemen, yeni açılıyorsa yüklendikten sonra gönderir
+function panelaSor(soru) {
+  const yeni = !panel;
+  panelAc(true);
+  if (yeni || panel.webContents.isLoading()) {
+    panel.webContents.once('did-finish-load', () => panel.webContents.send('ai:hazir-soru', soru));
+  } else {
+    panel.webContents.send('ai:hazir-soru', soru);
+  }
+}
+
+async function sayfaMetni(s) {
+  const wc = s.view.webContents;
+  // Sayfanın kendi betiklerinden yalıtılmış bir dünyada okunur
+  const metin = await wc.executeJavaScriptInIsolatedWorld(1000, [{ code: 'document.body ? document.body.innerText : ""' }]);
+  return { baslik: wc.getTitle(), url: wc.getURL(), metin: String(metin || '') };
+}
+
+function arayuzuGuncelle() {
+  if (guncellemeZamanlayici) return;
+  guncellemeZamanlayici = setTimeout(() => {
+    guncellemeZamanlayici = null;
+    if (!arayuz || arayuz.webContents.isDestroyed()) return;
+    const liste = [...sekmeler.values()].map((s) => {
+      const wc = s.view.webContents;
+      const url = sekmeAdresi(s);
+      const hatada = Boolean(s.hataAdresi && wc.getURL().startsWith('data:'));
+      const torBaslik = torDurum.yuzde
+        ? `Tor: %${torDurum.yuzde} (${YONTEM_ADLARI[torDurum.yontem] || ''})`
+        : 'Tor ağına bağlanıyor…';
+      return {
+        id: s.id,
+        baslik: s.torBekliyor ? torBaslik : (hatada ? 'Hata' : wc.getTitle()) || url || 'Yeni sekme',
+        hatada,
+        url,
+        favicon: s.tur === 'ic' ? 'logo-kucuk.png' : s.favicon || '',
+        yukleniyor: s.torBekliyor || wc.isLoading(),
+        geri: wc.navigationHistory.canGoBack(),
+        ileri: wc.navigationHistory.canGoForward(),
+        tur: s.tur,
+        guvenli: !hatada && url.startsWith('https://'),
+        engellenen: engellenen.get(wc.id) || 0,
+        yerImi: webAdresiMi(url) && veri.yerImiMi(url),
+        medya: s.tur === 'normal' && turboKullanilabilir() ? turbo.medyaListesi(wc.id).length : -1,
+        aktif: s.id === aktifId,
+      };
+    });
+    const iniyor = tumIndirmeler().filter((i) => i.durum === 'iniyor');
+    const toplam = iniyor.reduce((t, i) => t + (i.boyut || 0), 0);
+    const alinan = iniyor.reduce((t, i) => t + (i.alinan || 0), 0);
+    arayuz.webContents.send('tabs:update', {
+      sekmeler: liste,
+      aiAcik: panelAcik,
+      indirme: { var: tumIndirmeler().length > 0, aktif: iniyor.length, yuzde: toplam ? Math.round((alinan / toplam) * 100) : null },
+      guncelleme: guncelleyici.durum,
+    });
+    const tur = aktifSekme()?.tur;
+    if (panel && tur !== sonPanelTuru && !panel.webContents.isLoading()) {
+      sonPanelTuru = tur;
+      panel.webContents.send('ai:sekme', { tur });
+    }
+  }, 50);
+}
+
+function oturumuKaydet() {
+  if (kapaniyor) return;
+  const adresler = [...sekmeler.values()]
+    .filter((s) => s.tur === 'normal' || s.tur === 'ic')
+    .map(sekmeAdresi)
+    .filter((u) => webAdresiMi(u) || icSayfa(u))
+    // Arama sonuçları sorgusuz saklanır: her açılışta aynı aramalar yeniden yapılıp ücretlendirilmesin
+    .map((u) => (icSayfa(u) === 'ara' ? 'umbra://ara' : u));
+  veri.oturumKaydet(adresler);
+}
+
+function sirayaKoy(id, konum) {
+  const girdiler = [...sekmeler.entries()];
+  const i = girdiler.findIndex(([k]) => k === id);
+  const [girdi] = girdiler.splice(i, 1);
+  girdiler.splice(konum, 0, girdi);
+  sekmeler.clear();
+  for (const [k, v] of girdiler) sekmeler.set(k, v);
+}
+
+function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {}) {
+  url = url || veri.anaSayfa(tur);
+  const ic = icSayfa(url);
+  if (ic) tur = 'ic';
+  const id = ++sayac;
+  const ses = tur === 'ic' ? session.defaultSession : oturumAl(tur);
+  const view = new WebContentsView({
+    webPreferences: tur === 'ic'
+      ? { preload: path.join(__dirname, 'ic', 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false }
+      : {
+        session: ses,
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        webviewTag: false,
+        navigateOnDragDrop: false,
+        safeDialogs: true,
+        spellcheck: false,
+        // Video üstündeki "İndir ▼" düğmesi yalnızca normal sekmelerde; gizli ve Tor sekmelerine hiçbir kod eklenmez
+        ...(tur === 'normal' ? { preload: path.join(__dirname, 'sekme', 'preload.js') } : {}),
+      },
+  });
+  view.setBackgroundColor(tur === 'ic' ? '#1f2228' : '#ffffff');
+  const sekme = { id, view, tur, icSayfa: ic, icSorgu: ic ? icSorgu(url) : '', istenenAdres: url, favicon: '', hataAdresi: null, torBekliyor: false, bekleyenAdres: null };
+  sekmeler.set(id, sekme);
+  if (konum !== null) sirayaKoy(id, konum);
+  const wc = view.webContents;
+  // WebRTC, proxy'yi atlayıp gerçek IP adresini sızdırabilir; Tor sekmelerinde yalnızca proxy üzerinden izin verilir
+  if (tur === 'tor') wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+  wc.on('preload-error', (_e, yol, h) => console.error('Sekme ön yükleme hatası', yol, h));
+
+  wc.setWindowOpenHandler(({ url: yeni, disposition }) => {
+    if (webAdresiMi(yeni) && tur !== 'ic') sekmeAc(yeni, tur, { arkaPlanda: disposition === 'background-tab' });
+    return { action: 'deny' };
+  });
+
+  for (const olay of ['did-start-loading', 'did-stop-loading']) wc.on(olay, arayuzuGuncelle);
+  wc.on('page-title-updated', (_e, baslik) => {
+    if (tur === 'normal' && webAdresiMi(wc.getURL())) veri.basligiGuncelle(wc.getURL(), baslik);
+    arayuzuGuncelle();
+  });
+  wc.on('did-start-navigation', (ayr) => {
+    if (ayr.isMainFrame && !ayr.isSameDocument) {
+      engellenen.set(wc.id, 0);
+      turbo.temizle(wc.id);
+      sekme.favicon = '';
+      if (!ayr.url.startsWith('data:')) sekme.hataAdresi = null;
+    }
+  });
+  const gezindi = (adres) => {
+    // Gizli ve Tor sekmelerinde geçmiş tutulmaz
+    if (tur === 'normal' && webAdresiMi(adres)) veri.gecmiseEkle(adres, wc.getTitle());
+    oturumuKaydet();
+    arayuzuGuncelle();
+  };
+  wc.on('did-navigate', (_e, adres) => gezindi(adres));
+  wc.on('did-navigate-in-page', (_e, adres, anaCerceve) => { if (anaCerceve) gezindi(adres); });
+  wc.on('page-favicon-updated', (_e, ikonlar) => {
+    sekme.favicon = ikonlar.find((i) => i.startsWith('https://')) || '';
+    arayuzuGuncelle();
+  });
+  wc.on('found-in-page', (_e, sonuc) => {
+    if (sekme.id === aktifId && sonuc.finalUpdate) {
+      arayuz.webContents.send('bul:sonuc', { aktif: sonuc.activeMatchOrdinal, toplam: sonuc.matches });
+    }
+  });
+
+  wc.on('did-fail-load', async (_e, kod, aciklama, adres, anaCerceve) => {
+    if (!anaCerceve || kod === -3 || tur === 'ic') return; // -3: kullanıcı iptal etti / yönlendirme
+    let host = '';
+    try { host = new URL(adres).hostname; } catch {}
+    if (adres.startsWith('https://') && yukseltilen.has(host)) {
+      yukseltilen.delete(host);
+      const { response } = await dialog.showMessageBox(pencere, {
+        type: 'warning',
+        title: 'Güvenli bağlantı kurulamadı',
+        message: `${host} güvenli (HTTPS) bağlantıyı desteklemiyor.`,
+        detail: 'Şifresiz HTTP ile devam ederseniz bu sitede gönderdiğiniz bilgiler başkaları tarafından görülebilir.',
+        buttons: ['Vazgeç', 'Şifresiz devam et'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (response === 1) {
+        httpIzinli.add(host);
+        return wc.loadURL(adres.replace(/^https:/, 'http:'));
+      }
+    }
+    sekme.hataAdresi = adres;
+    const sertifika = kod <= -200 && kod > -300;
+    wc.loadURL(hataSayfasi(
+      sertifika ? 'Bağlantı güvenli değil' : 'Sayfa açılamadı',
+      sertifika
+        ? `${host} geçerli bir güvenlik sertifikası sunmadı (${aciklama}). Saldırganlar bilgilerinizi çalmaya çalışıyor olabilir, bu yüzden sayfa engellendi.`
+        : `${adres} yüklenemedi (${aciklama}).`,
+    ));
+  });
+
+  wc.on('enter-html-full-screen', () => { tamEkran = true; pencere.setFullScreen(true); yerlesim(); });
+  wc.on('leave-html-full-screen', () => { tamEkran = false; pencere.setFullScreen(false); yerlesim(); });
+  if (tur !== 'ic') wc.on('context-menu', (_e, p) => sagTikMenusu(wc, p, tur));
+
+  if (tur === 'ic') {
+    icYukle(wc, ic, sekme.icSorgu);
+  } else if (tur === 'tor') {
+    sekme.torBekliyor = true;
+    sekme.bekleyenAdres = url;
+    wc.loadURL(bilgiSayfasi('Tor ağına bağlanılıyor',
+      'Engel varsa köprüler otomatik denenir; bu işlem bir dakikayı bulabilir. Bağlantı kurulana kadar bu sekmeden hiçbir veri gönderilmez.'));
+    toraHazirla(ses).then(() => {
+      if (wc.isDestroyed()) return;
+      sekme.torBekliyor = false;
+      if (sekme.bekleyenAdres === OZEL_BASLANGIC) ozelBaslangicYukle(wc, 'tor');
+      else wc.loadURL(sekme.bekleyenAdres);
+    }).catch((h) => {
+      if (wc.isDestroyed()) return;
+      sekme.torBekliyor = false;
+      sekme.hataAdresi = sekme.bekleyenAdres;
+      wc.loadURL(hataSayfasi('Tor ağına bağlanılamadı', h.message + ' İnternet bağlantınızı kontrol edip yeni bir Tor sekmesi açın.'));
+    });
+  } else if (url === OZEL_BASLANGIC) {
+    ozelBaslangicYukle(wc, tur);
+  } else {
+    wc.loadURL(url);
+  }
+  if (arkaPlanda && aktifId !== null) arayuzuGuncelle();
+  else sekmeyeGec(id);
+  // Yeni sekme sayfası Umbra Arama ise imleç sayfadaki arama kutusunda olur, değilse adres çubuğunda
+  if (!arkaPlanda && url === veri.anaSayfa(tur === 'ic' ? 'normal' : tur) && !(ic === 'ara' && !sekme.icSorgu)) adresCubugunaOdaklan();
+  oturumuKaydet();
+  return id;
+}
+
+// Gizli/Tor sekmelerinin yerel başlangıç sayfası. Sekmenin kendi (gizli/Tor) oturumunda, köprüsüz açılır;
+// içindeki arama kutusu doğrudan seçili izleyicisiz arama motoruna gider.
+function ozelBaslangicYukle(wc, tur) {
+  const m = veri.ozelMotor();
+  wc.loadFile(path.join(__dirname, 'ic', 'baslangic.html'), { query: { tur, ara: m.ara, ad: m.ad } });
+}
+
+// Bir sekmede adres açar; sekme türü (iç sayfa / web) değişiyorsa aynı konumda yeni sekmeyle değiştirir
+function git(s, url) {
+  if (!s || !url) return;
+  if (url === OZEL_BASLANGIC) {
+    if (s.tur !== 'gizli' && s.tur !== 'tor') url = 'umbra://ara';
+    else if (s.torBekliyor) { s.bekleyenAdres = url; return; }
+    else return ozelBaslangicYukle(s.view.webContents, s.tur);
+  }
+  const ic = icSayfa(url);
+  if (!ic && !webAdresiMi(url)) return;
+  if (s.torBekliyor) { s.bekleyenAdres = url; return; } // Tor bağlanınca bu adres açılır
+  if (s.tur === 'ic' && ic) {
+    s.icSayfa = ic;
+    s.icSorgu = icSorgu(url);
+    icYukle(s.view.webContents, ic, s.icSorgu);
+    oturumuKaydet();
+    return arayuzuGuncelle();
+  }
+  if ((s.tur === 'ic') !== Boolean(ic)) {
+    const konum = [...sekmeler.keys()].indexOf(s.id);
+    sekmeAc(url, s.tur === 'ic' ? 'normal' : s.tur, { konum });
+    return sekmeKapat(s.id, { kayitsiz: true });
+  }
+  s.view.webContents.loadURL(url);
+  s.view.webContents.focus();
+}
+
+function sagTikMenusu(wc, p, tur) {
+  const ogeler = [];
+  if (p.linkURL && webAdresiMi(p.linkURL)) {
+    ogeler.push(
+      { label: 'Bağlantıyı yeni sekmede aç', click: () => sekmeAc(p.linkURL, tur, { arkaPlanda: true }) },
+      { label: 'Bağlantıyı gizli sekmede aç', click: () => sekmeAc(p.linkURL, 'gizli') },
+      { label: 'Bağlantıyı Tor sekmesinde aç', click: () => sekmeAc(p.linkURL, 'tor') },
+      { label: 'Bağlantı adresini kopyala', click: () => clipboard.writeText(p.linkURL) },
+      { type: 'separator' },
+    );
+  }
+  if (p.mediaType === 'image' && webAdresiMi(p.srcURL)) {
+    ogeler.push(
+      { label: 'Resmi farklı kaydet', click: () => wc.downloadURL(p.srcURL) },
+      { label: 'Resim adresini kopyala', click: () => clipboard.writeText(p.srcURL) },
+      { type: 'separator' },
+    );
+  }
+  if (p.isEditable) {
+    ogeler.push({ role: 'cut', label: 'Kes' }, { role: 'copy', label: 'Kopyala' }, { role: 'paste', label: 'Yapıştır' }, { type: 'separator' });
+  } else if (p.selectionText) {
+    const metin = p.selectionText.trim().slice(0, 200);
+    ogeler.push(
+      { role: 'copy', label: 'Kopyala' },
+      { label: `"${metin.slice(0, 30)}" için ara`, click: () => sekmeAc(veri.aramaAdresi(metin, tur), tur) },
+      { label: '✨ AI ile açıkla', click: () => panelaSor(`Şu ifadeyi açıkla:\n"${p.selectionText.trim()}"`) },
+      { label: '✨ AI ile Türkçeye çevir', click: () => panelaSor(`Şunu Türkçeye çevir:\n"${p.selectionText.trim()}"`) },
+      { type: 'separator' },
+    );
+  }
+  const turboOgeleri = turboMenuOgeleri([...sekmeler.values()].find((x) => x.view.webContents === wc), p);
+  if (turboOgeleri.length) ogeler.push(...turboOgeleri, { type: 'separator' });
+  ogeler.push(
+    { label: 'Geri', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
+    { label: 'İleri', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
+    { label: 'Yenile', click: () => wc.reload() },
+    { type: 'separator' },
+    { label: 'Sayfayı farklı kaydet', click: () => sayfayiKaydet(wc) },
+    { label: 'Yazdır', click: () => wc.print() },
+    { label: 'İncele', click: () => wc.inspectElement(p.x, p.y) },
+  );
+  Menu.buildFromTemplate(ogeler).popup();
+}
+
+async function sayfayiKaydet(wc) {
+  if (!wc || !webAdresiMi(wc.getURL())) return;
+  const ad = (wc.getTitle() || 'sayfa').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 120) || 'sayfa';
+  const { canceled, filePath } = await dialog.showSaveDialog(pencere, {
+    defaultPath: benzersizYol(app.getPath('downloads'), ad + '.html'),
+    filters: [{ name: 'Web sayfası (tamamı)', extensions: ['html'] }],
+  });
+  if (!canceled && filePath) await wc.savePage(filePath, 'HTMLComplete');
+}
+
+function sekmeyeGec(id) {
+  const yeni = sekmeler.get(id);
+  if (!yeni) return;
+  const eski = aktifSekme();
+  if (eski && eski !== yeni) {
+    eski.view.webContents.stopFindInPage('clearSelection');
+    pencere.contentView.removeChildView(eski.view);
+  }
+  pencere.contentView.addChildView(yeni.view);
+  aktifId = id;
+  arayuz.webContents.send('bul:kapat');
+  yerlesim();
+  yeni.view.webContents.focus();
+  arayuzuGuncelle();
+}
+
+function sekmeKapat(id, { kayitsiz = false } = {}) {
+  const s = sekmeler.get(id);
+  if (!s) return;
+  const sira = [...sekmeler.keys()];
+  const i = sira.indexOf(id);
+  if (!kayitsiz && s.tur === 'normal') {
+    const adres = sekmeAdresi(s);
+    if (webAdresiMi(adres)) kapatilanlar.push({ adres, konum: i });
+    if (kapatilanlar.length > 25) kapatilanlar.shift();
+  }
+  if (aktifId === id) pencere.contentView.removeChildView(s.view);
+  sekmeler.delete(id);
+  engellenen.delete(s.view.webContents.id);
+  turbo.temizle(s.view.webContents.id);
+  s.view.webContents.close();
+  if (s.tur !== 'normal' && s.tur !== 'ic' && ![...sekmeler.values()].some((x) => x.tur === s.tur)) oturumuTemizle(s.tur);
+  if (!sekmeler.size) return pencere.close();
+  if (aktifId === id) {
+    const kalan = [...sekmeler.keys()];
+    sekmeyeGec(kalan[Math.min(i, kalan.length - 1)]);
+  } else {
+    arayuzuGuncelle();
+  }
+  oturumuKaydet();
+}
+
+function kapatilaniAc() {
+  const son = kapatilanlar.pop();
+  if (son) sekmeAc(son.adres, 'normal', { konum: Math.min(son.konum, sekmeler.size) });
+}
+
+function siradakiSekme(yon) {
+  const sira = [...sekmeler.keys()];
+  const i = sira.indexOf(aktifId);
+  sekmeyeGec(sira[(i + yon + sira.length) % sira.length]);
+}
+
+function adresCubugunaOdaklan() {
+  arayuz.webContents.focus();
+  arayuz.webContents.send('focus:address');
+}
+
+function bulAc() {
+  arayuz.webContents.focus();
+  arayuz.webContents.send('bul:ac');
+}
+
+function yerImiDegistir() {
+  const s = aktifSekme();
+  const url = s && sekmeAdresi(s);
+  if (!webAdresiMi(url)) return;
+  veri.yerImiDegistir(url, s.view.webContents.getTitle());
+  arayuzuGuncelle();
+  icSayfalaraBildir('yer-imleri');
+}
+
+function zoom(fark) {
+  const wc = aktifWc();
+  if (wc) wc.setZoomLevel(fark === 0 ? 0 : wc.getZoomLevel() + fark);
+}
+
+function anaMenuOgeleri() {
+  return [
+    { label: 'Yeni sekme', accelerator: 'CmdOrCtrl+T', click: () => sekmeAc() },
+    { label: 'Yeni gizli sekme', accelerator: 'CmdOrCtrl+Shift+N', click: () => sekmeAc(null, 'gizli') },
+    // Alt+Shift, Windows'ta klavye dilini değiştirdiği için kullanılmaz
+    { label: 'Yeni Tor sekmesi', accelerator: 'CmdOrCtrl+Shift+U', click: () => sekmeAc(null, 'tor') },
+    { type: 'separator' },
+    { label: 'Geçmiş', accelerator: 'CmdOrCtrl+H', click: () => sekmeAc('umbra://gecmis') },
+    { label: 'İndirilenler', accelerator: 'CmdOrCtrl+J', click: () => sekmeAc('umbra://indirilenler') },
+    { label: 'Yer imleri', accelerator: 'CmdOrCtrl+Shift+O', click: () => sekmeAc('umbra://yer-imleri') },
+    { type: 'separator' },
+    { label: 'Sayfada bul…', accelerator: 'CmdOrCtrl+F', click: bulAc },
+    { label: 'Bu sayfayı yer imlerine ekle', accelerator: 'CmdOrCtrl+D', click: yerImiDegistir },
+    { label: 'Sayfayı farklı kaydet…', accelerator: 'CmdOrCtrl+S', click: () => sayfayiKaydet(aktifWc()) },
+    { label: 'Yazdır…', accelerator: 'CmdOrCtrl+P', click: () => aktifWc()?.print() },
+    { type: 'separator' },
+    { label: 'Yakınlaştır', accelerator: 'CmdOrCtrl+=', click: () => zoom(0.5) },
+    { label: 'Uzaklaştır', accelerator: 'CmdOrCtrl+-', click: () => zoom(-0.5) },
+    { label: 'Gerçek boyut', accelerator: 'CmdOrCtrl+0', click: () => zoom(0) },
+    { type: 'separator' },
+    { label: '✨ Umbra AI', accelerator: 'Alt+A', click: () => panelAc() },
+    { label: 'Ayarlar', click: () => sekmeAc('umbra://ayarlar') },
+    { type: 'separator' },
+    { label: 'Çık', click: () => pencere?.close() },
+  ];
+}
+
+function menuyuKur() {
+  // Görünmeyen uygulama menüsü yalnızca klavye kısayolları içindir
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'Umbra',
+      submenu: [
+        ...anaMenuOgeleri(),
+        { label: 'Kapatılan sekmeyi aç', accelerator: 'CmdOrCtrl+Shift+T', click: kapatilaniAc },
+        { label: 'Sekmeyi kapat', accelerator: 'CmdOrCtrl+W', click: () => sekmeKapat(aktifId) },
+        { label: 'Sonraki sekme', accelerator: 'Ctrl+Tab', click: () => siradakiSekme(1) },
+        { label: 'Önceki sekme', accelerator: 'Ctrl+Shift+Tab', click: () => siradakiSekme(-1) },
+        { label: 'Adres çubuğu', accelerator: 'CmdOrCtrl+L', click: adresCubugunaOdaklan },
+        { label: 'Adres çubuğu ', accelerator: 'F6', click: adresCubugunaOdaklan },
+        { label: 'Yenile', accelerator: 'F5', click: () => aktifWc()?.reload() },
+        { label: 'Yenile ', accelerator: 'CmdOrCtrl+R', click: () => aktifWc()?.reload() },
+        { label: 'Önbelleksiz yenile', accelerator: 'CmdOrCtrl+Shift+R', click: () => aktifWc()?.reloadIgnoringCache() },
+        { label: 'Geri', accelerator: 'Alt+Left', click: () => aktifWc()?.navigationHistory.goBack() },
+        { label: 'İleri', accelerator: 'Alt+Right', click: () => aktifWc()?.navigationHistory.goForward() },
+        { label: 'Yakınlaştır ', accelerator: 'CmdOrCtrl+Plus', click: () => zoom(0.5) },
+        { label: 'Geliştirici araçları', accelerator: 'F12', click: () => aktifWc()?.toggleDevTools() },
+        { label: 'Tam ekran', accelerator: 'F11', click: () => pencere.setFullScreen(!pencere.isFullScreen()) },
+      ],
+    },
+    {
+      label: 'Düzen',
+      submenu: [
+        { role: 'undo', label: 'Geri al' }, { role: 'redo', label: 'Yinele' }, { type: 'separator' },
+        { role: 'cut', label: 'Kes' }, { role: 'copy', label: 'Kopyala' }, { role: 'paste', label: 'Yapıştır' },
+        { role: 'selectAll', label: 'Tümünü seç' },
+      ],
+    },
+  ]));
+}
+
+// --- İç sayfalar (umbra://...) ---
+function icSekmeleri() {
+  return [...sekmeler.values()].filter((s) => s.tur === 'ic' && !s.view.webContents.isDestroyed());
+}
+
+function icSayfalaraBildir(sayfa) {
+  const hedef = sayfa === 'guncelleme' ? 'ayarlar' : sayfa;
+  for (const s of icSekmeleri()) if (s.icSayfa === hedef) s.view.webContents.send('ic:degisti', sayfa);
+}
+
+function icVerisi(sayfa, arama = '') {
+  if (sayfa === 'gecmis') {
+    const q = String(arama).toLowerCase();
+    const sonuc = [];
+    for (let i = veri.gecmis.length - 1; i >= 0 && sonuc.length < 1000; i--) {
+      const g = veri.gecmis[i];
+      if (!q || g.url.toLowerCase().includes(q) || (g.baslik || '').toLowerCase().includes(q)) sonuc.push(g);
+    }
+    return { gecmis: sonuc };
+  }
+  if (sayfa === 'yer-imleri') return { yerImleri: [...veri.yerImleri].reverse() };
+  if (sayfa === 'ara') {
+    return {
+      aiAnahtar: asistan.anahtarVar(),
+      varsayilan: veri.ayarlar.aramaMotoru === 'umbra',
+      kisayollar: [...veri.yerImleri].reverse().slice(0, 8),
+      yedekMotor: { ad: veri.ozelMotor().ad, ara: veri.ozelMotor().ara },
+    };
+  }
+  if (sayfa === 'indirilenler') return { indirilenler: tumIndirmeler() };
+  if (sayfa === 'ayarlar') {
+    return {
+      ayarlar: veri.ayarlar,
+      motorlar: Object.fromEntries(Object.entries(ARAMA_MOTORLARI).map(([k, v]) => [k, v.ad])),
+      ozelMotorlar: Object.fromEntries(OZEL_MOTORLAR.map((k) => [k, ARAMA_MOTORLARI[k].ad])),
+      aiAnahtar: asistan.anahtarVar(),
+      turboAcik: turbo.acik,
+      guncelleme: guncelleyici.durum,
+      surum: { umbra: app.getVersion(), chromium: process.versions.chrome, electron: process.versions.electron },
+    };
+  }
+  return {};
+}
+
+async function veriTemizle(sec) {
+  if (sec.gecmis) { veri.gecmisiSil('hepsi'); kapatilanlar.length = 0; }
+  if (sec.cerez) await normalOturum.clearStorageData();
+  if (sec.onbellek) await normalOturum.clearCache();
+  if (sec.indirmeler) { veri.indirmeleriTemizle(); geciciIndirmeler.splice(0); }
+  if (sec.izinler) izinKararlari.clear();
+  indirmeDegisti();
+}
+
+async function icEylem(e, eylem, ...arg) {
+  const s = [...sekmeler.values()].find((x) => x.tur === 'ic' && x.view.webContents === e.sender);
+  switch (eylem) {
+    case 'ac': {
+      const url = adreseCevir(arg[0]);
+      if (!url) return;
+      if (arg[1]) sekmeAc(url, 'normal', { arkaPlanda: true });
+      else git(s, url);
+      return;
+    }
+    case 'gecmis-sil': veri.gecmisiSil(arg[0] === 'hepsi' ? 'hepsi' : [].concat(arg[0]).map(Number)); return;
+    case 'yerimi-sil': veri.yerImiSil(Number(arg[0])); arayuzuGuncelle(); return;
+    case 'yerimi-duzenle': return { tamam: veri.yerImiDuzenle(Number(arg[0]), arg[1], adreseCevir(arg[2])) };
+    case 'indirme': return indirmeEylemi(String(arg[0]), String(arg[1]));
+    case 'indirmeleri-temizle': veri.indirmeleriTemizle(); geciciIndirmeler.splice(0); indirmeDegisti(); return;
+    case 'ayar': {
+      const tamam = veri.ayarla(String(arg[0]), arg[1]);
+      // Video üstündeki "İndir" düğmesi açık sekmelerde de hemen gizlenir/görünür
+      if (tamam && arg[0] === 'turboIndir') {
+        for (const x of sekmeler.values()) if (x.tur === 'normal') x.view.webContents.send('turbo:etkin', turboDugmesiEtkin());
+      }
+      return { tamam };
+    }
+    case 'veri-temizle': return veriTemizle(arg[0] || {});
+    case 'ai-ayar': return panelAc(true);
+    case 'ara': {
+      // Yanıt metni akarken sayfaya parça parça gönderilir; sayfa kapanırsa parçalar sessizce atılır
+      const gonder = (parca) => { if (!e.sender.isDestroyed()) e.sender.send('ic:parca', parca); };
+      return asistan.ara(String(arg[0] || ''), gonder);
+    }
+    case 'ara-durdur': asistan.aramayiDurdur(); return;
+    case 'ara-motor': return { tamam: veri.ayarla('aramaMotoru', 'umbra') };
+    case 'disa-aktar': {
+      const tarih = new Date().toISOString().slice(0, 10);
+      const { canceled, filePath } = await dialog.showSaveDialog(pencere, {
+        title: 'Umbra verilerini dışa aktar',
+        defaultPath: path.join(app.getPath('documents'), `Umbra-Yedek-${tarih}.umbra`),
+        filters: [{ name: 'Umbra yedeği', extensions: ['umbra'] }],
+      });
+      if (canceled || !filePath) return { iptal: true };
+      const yedek = veri.disaAktar(arg[0] || {});
+      fs.writeFileSync(filePath, JSON.stringify(yedek));
+      return { dosya: path.basename(filePath), yerImleri: yedek.yerImleri?.length || 0, gecmis: yedek.gecmis?.length || 0 };
+    }
+    case 'ice-aktar': {
+      const { canceled, filePaths } = await dialog.showOpenDialog(pencere, {
+        title: 'Umbra yedeğini içe aktar',
+        properties: ['openFile'],
+        filters: [{ name: 'Umbra yedeği', extensions: ['umbra', 'json'] }],
+      });
+      if (canceled || !filePaths?.length) return { iptal: true };
+      if (fs.statSync(filePaths[0]).size > 100 * 1024 * 1024) return { hata: 'Dosya çok büyük.' };
+      let yedek;
+      try { yedek = JSON.parse(fs.readFileSync(filePaths[0], 'utf8')); } catch { return { hata: 'Dosya okunamadı ya da bozuk.' }; }
+      const sayi = veri.iceAktar(yedek);
+      arayuzuGuncelle();
+      for (const s of ['gecmis', 'yer-imleri']) icSayfalaraBildir(s);
+      return sayi;
+    }
+    case 'indirme-klasoru': return shell.openPath(app.getPath('downloads'));
+    case 'guncelleme-denetle': guncelleyici.denetle(); return;
+    case 'guncelleme-yeniden': guncelleyici.yenidenBaslat(); return;
+    case 'turbo-goster': return turbo.goster().then(() => ({}), () => ({ hata: 'TurboDownloader açık değil.' }));
+    default: return { hata: 'bilinmeyen eylem' };
+  }
+}
+
+function ipcKur() {
+  const uiMi = (e) => arayuz && e.sender === arayuz.webContents;
+  const dinle = (kanal, fn) => ipcMain.on(kanal, (e, ...arg) => { if (uiMi(e)) fn(...arg); });
+  dinle('tab:new', (tur) => sekmeAc(null, TURLER.includes(tur) ? tur : 'normal'));
+  dinle('tab:close', (id) => sekmeKapat(Number(id)));
+  dinle('tab:switch', (id) => sekmeyeGec(Number(id)));
+  dinle('nav:go', (girdi) => git(aktifSekme(), adreseCevir(girdi, aktifSekme()?.tur)));
+  dinle('nav:back', () => aktifWc()?.navigationHistory.goBack());
+  dinle('nav:forward', () => aktifWc()?.navigationHistory.goForward());
+  dinle('nav:reload', () => aktifWc()?.reload());
+  dinle('nav:stop', () => aktifWc()?.stop());
+  dinle('nav:home', () => git(aktifSekme(), veri.anaSayfa(aktifSekme()?.tur)));
+  dinle('ai:panel', () => panelAc());
+  dinle('yerimi:degistir', yerImiDegistir);
+  dinle('indirilenler:ac', () => sekmeAc('umbra://indirilenler'));
+  dinle('medya:menu', medyaMenusu);
+  dinle('guncelleme:yeniden', () => guncelleyici.yenidenBaslat());
+  dinle('ui:menu', (x, y) => Menu.buildFromTemplate(anaMenuOgeleri()).popup({ window: pencere, x: Math.round(x), y: Math.round(y) }));
+  dinle('ui:yukseklik', (ek) => {
+    arayuzEk = Math.max(0, Math.min(420, Number(ek) || 0));
+    yerlesim();
+  });
+  dinle('bul:ara', (metin, ileri, yeni) => {
+    const wc = aktifWc();
+    if (!wc) return;
+    if (!metin) { wc.stopFindInPage('clearSelection'); arayuz.webContents.send('bul:sonuc', { aktif: 0, toplam: 0 }); return; }
+    wc.findInPage(String(metin), { forward: ileri !== false, findNext: yeni === true });
+  });
+  dinle('bul:kapat', () => {
+    const wc = aktifWc();
+    if (wc) { wc.stopFindInPage('clearSelection'); wc.focus(); }
+  });
+  ipcMain.handle('oneri:al', (e, metin) => (uiMi(e) ? veri.oneriler(String(metin)) : []));
+
+  // Video üstü "İndir ▼" düğmesi kanalları: yalnızca normal sekmelerin ana çerçevesindeki Umbra kodu çağırabilir.
+  // Sayfa adresi gönderenden değil, sekmenin kendisinden alınır; diğer alanlar tek tek doğrulanır.
+  const normalSekme = (e) => {
+    const s = [...sekmeler.values()].find((x) => x.tur === 'normal' && x.view.webContents === e.sender);
+    return s && e.senderFrame === e.sender.mainFrame ? s : null;
+  };
+  const adresVeyaBos = (u) => (typeof u === 'string' && webAdresiMi(u) && u.length <= 4096 ? u : '');
+  const kullanilamaz = { error: 'TurboDownloader kullanılamıyor' };
+  ipcMain.handle('turbo:durum', (e) => ({ etkin: Boolean(normalSekme(e)) && turboDugmesiEtkin() }));
+  ipcMain.handle('turbo:formatlar', (e, a = {}) => {
+    const s = normalSekme(e);
+    if (!s || !turboDugmesiEtkin()) return kullanilamaz;
+    const wc = s.view.webContents;
+    return turbo.formatlar(wc.session, wc.id, wc.getURL(), adresVeyaBos(a.src));
+  });
+  ipcMain.handle('turbo:indir', async (e, a = {}) => {
+    const s = normalSekme(e);
+    if (!s || !turboDugmesiEtkin()) return kullanilamaz;
+    try {
+      await turboSayfaGonder(s, {
+        mode: a.mode === 'audio' ? 'audio' : 'video',
+        quality: Math.max(0, Math.min(100000, Number(a.quality) || 0)),
+        source: adresVeyaBos(a.source),
+        src: adresVeyaBos(a.src),
+      });
+      return {};
+    } catch (h) {
+      return { error: h.message };
+    }
+  });
+  ipcMain.handle('turbo:dogrudan', async (e, a = {}) => {
+    const s = normalSekme(e);
+    const src = adresVeyaBos(a.src);
+    if (!s || !turboDugmesiEtkin() || !src) return kullanilamaz;
+    try {
+      await turbo.gonder(s.view.webContents.session, { url: src, referer: s.view.webContents.getURL(), mediaHint: true });
+      turboKaydi(src.split('/').pop() || src, src);
+      return {};
+    } catch (h) {
+      return { error: h.message };
+    }
+  });
+
+  // AI paneli kanalları: yalnızca panel sayfası çağırabilir
+  const panelMi = (e) => panel && e.sender === panel.webContents;
+  const panelDinle = (kanal, fn) => ipcMain.on(kanal, (e, ...arg) => { if (panelMi(e)) fn(...arg); });
+  const panelCevapla = (kanal, fn) => ipcMain.handle(kanal, async (e, ...arg) => {
+    if (!panelMi(e)) return { hata: 'yetkisiz' };
+    try { return (await fn(...arg)) || {}; } catch (h) { return { hata: h.message }; }
+  });
+  panelDinle('ai:panel', () => panelAc(false));
+  panelDinle('ai:durdur', () => asistan.durdur());
+  panelDinle('ai:sifirla', () => asistan.sifirla());
+  panelDinle('ai:konsol', () => sekmeAc('https://console.anthropic.com/settings/keys'));
+  panelCevapla('ai:durum', () => ({ anahtarVar: asistan.anahtarVar() }));
+  panelCevapla('ai:anahtar', (anahtar) => asistan.anahtarKaydet(anahtar));
+  panelCevapla('ai:anahtar-sil', () => asistan.anahtarSil());
+  panelCevapla('ai:sor', async (soru, sayfaDahil) => {
+    const s = aktifSekme();
+    // Tor sekmesinin içeriği anonimliği korumak için asla dışarı gönderilmez
+    const sayfa = sayfaDahil && s && s.tur !== 'tor' && !s.torBekliyor && webAdresiMi(s.view.webContents.getURL())
+      ? await sayfaMetni(s)
+      : null;
+    return asistan.sor(soru, sayfa, (parca) => {
+      if (panel && !panel.webContents.isDestroyed()) panel.webContents.send('ai:parca', parca);
+    });
+  });
+
+  // İç sayfa kanalları: yalnızca umbra:// sekmeleri çağırabilir
+  const icMi = (e) => icSekmeleri().some((s) => s.view.webContents === e.sender);
+  ipcMain.handle('ic:veri', (e, sayfa, arama) => (icMi(e) ? icVerisi(String(sayfa), arama) : {}));
+  ipcMain.handle('ic:eylem', async (e, eylem, ...arg) => {
+    if (!icMi(e)) return { hata: 'yetkisiz' };
+    try { return (await icEylem(e, String(eylem), ...arg)) || {}; } catch (h) { return { hata: h.message }; }
+  });
+}
+
+// Her web içeriği için genel kurallar: webview yok, http(s) dışına gezinme yok,
+// Umbra'nın kendi sayfaları (arayüz, panel, iç sayfalar) hiçbir yere gidemez
+app.on('web-contents-created', (_e, wc) => {
+  wc.on('will-attach-webview', (e) => e.preventDefault());
+  wc.on('will-navigate', (e, url) => {
+    // Umbra'nın kendi sayfaları (arayüz, AI paneli, umbra:// sayfaları) varsayılan oturumda çalışır ve hiçbir yere gidemez.
+    // Gizli/Tor başlangıç sayfası ise kendi oturumundadır ve arama sonucuna gidebilir.
+    const yerel = wc.getURL().startsWith('file:') && wc.session === session.defaultSession;
+    if (yerel || !webAdresiMi(url)) e.preventDefault();
+  });
+  wc.on('will-redirect', (e, url) => {
+    if (!webAdresiMi(url)) e.preventDefault();
+  });
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+});
+
+// Geçersiz sertifikalar asla kabul edilmez
+app.on('certificate-error', (e, _wc, _url, _hata, _sertifika, cb) => {
+  e.preventDefault();
+  cb(false);
+});
+
+app.on('second-instance', () => {
+  if (!pencere) return;
+  if (pencere.isMinimized()) pencere.restore();
+  pencere.focus();
+});
+
+app.whenReady().then(() => {
+  app.userAgentFallback = temizUserAgent(app.userAgentFallback);
+  // DNS sorguları şifreli (DNS over HTTPS): internet sağlayıcısı hangi siteye girdiğinizi göremez
+  app.configureHostResolver({
+    secureDnsMode: 'secure',
+    secureDnsServers: ['https://cloudflare-dns.com/dns-query', 'https://dns.quad9.net/dns-query'],
+  });
+
+  veri = new Veri(app.getPath('userData'));
+  turbo = new TurboIndir();
+  turbo.degisince = () => {
+    arayuzuGuncelle();
+    for (const x of sekmeler.values()) if (x.tur === 'normal') x.view.webContents.send('turbo:etkin', turboDugmesiEtkin());
+  };
+  sertlestir(session.defaultSession, 'arayuz');
+  normalOturum = session.fromPartition('persist:umbra');
+  sertlestir(normalOturum, 'normal');
+
+  asistan = new Asistan(app.getPath('userData'));
+  veri.aiVarMi = () => asistan.anahtarVar(); // anahtar yoksa Umbra Arama yerine özel motor kullanılır
+  tor = new Tor(TOR_KOK, path.join(app.getPath('userData'), 'tor'));
+  tor.on('durum', (d) => { torDurum = d; arayuzuGuncelle(); });
+
+  pencere = new BaseWindow({
+    width: 1280,
+    height: 820,
+    minWidth: 520,
+    minHeight: 360,
+    title: 'Umbra',
+    icon: SIMGE,
+    backgroundColor: '#1f2228',
+    autoHideMenuBar: true,
+  });
+  arayuz = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'arayuz', 'preload.js'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false,
+    },
+  });
+  arayuz.setBackgroundColor('#00000000');
+  pencere.contentView.addChildView(arayuz);
+  arayuz.webContents.loadFile(path.join(__dirname, 'arayuz', 'index.html'));
+  arayuz.webContents.once('did-finish-load', arayuzuGuncelle);
+  if (DUMAN_TESTI) {
+    arayuz.webContents.once('did-finish-load', async () => {
+      const ic = sekmeAc('umbra://ayarlar');
+      const wc = sekmeler.get(ic).view.webContents;
+      wc.once('did-finish-load', async () => {
+        const metin = await wc.executeJavaScript('document.body.innerText');
+        const tamam = metin.includes('Ayarlar') && fs.existsSync(path.join(TOR_KOK, 'tor', 'tor.exe'));
+        console.log(tamam ? 'DUMAN TESTİ GEÇTİ' : 'DUMAN TESTİ BAŞARISIZ');
+        app.exit(tamam ? 0 : 1);
+      });
+    });
+  }
+
+  pencere.on('resize', yerlesim);
+  pencere.on('leave-full-screen', () => { tamEkran = false; yerlesim(); });
+  pencere.on('close', () => {
+    oturumuKaydet();
+    kapaniyor = true;
+    veri.hepsiniKaydet();
+  });
+  pencere.on('closed', () => {
+    pencere = null;
+    oturumuTemizle('gizli');
+    oturumuTemizle('tor');
+    tor.durdur();
+    app.quit();
+  });
+
+  menuyuKur();
+  ipcKur();
+  guncelleyici.on('degisti', () => { arayuzuGuncelle(); icSayfalaraBildir('guncelleme'); });
+  guncelleyici.baslat();
+  if (ARAYUZ_TESTI) {
+    arayuz.webContents.once('did-finish-load', () => setTimeout(() => require('./test/arayuz-testi')({
+      get arayuz() { return arayuz; },
+      get panel() { return panel; },
+      get panelAcik() { return panelAcik; },
+      get pencere() { return pencere; },
+      sekmeler, aktifSekme, veri, sekmeAc, sekmeAdresi, tumIndirmeler, anaMenuOgeleri,
+    }), 1500));
+  }
+  const onceki = veri.ayarlar.oturumuGeriYukle ? veri.oturum.filter((u) => webAdresiMi(u) || icSayfa(u)) : [];
+  if (onceki.length) {
+    onceki.forEach((u, i) => sekmeAc(u, 'normal', { arkaPlanda: i > 0 }));
+  } else {
+    sekmeAc();
+  }
+});

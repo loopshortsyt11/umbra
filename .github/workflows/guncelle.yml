@@ -1,0 +1,66 @@
+# Haftalık güvenlik güncellemesi: Electron (Chromium yamaları) ve Tor'un en son sürümleriyle Umbra'yı derler ve yayınlar.
+# Kurulu Umbra'lar yeni sürümü GitHub Releases'tan kendiliğinden indirir.
+name: Haftalık güvenlik güncellemesi
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'   # her pazartesi 03:00 UTC
+  workflow_dispatch:       # elle "yeni sürüm yayınla"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: guncelle
+  cancel-in-progress: false
+
+jobs:
+  derle:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Electron ve Tor'u güncelle
+        id: guncel
+        run: |
+          eski_e=$(node -p "require('electron/package.json').version")
+          npm install --save-dev electron@latest
+          yeni_e=$(node -p "require('electron/package.json').version")
+          bash scripts/tor-guncelle.sh
+          yeni_t=$(cat tor-paket/SURUM)
+          eski_t=$(cat tor-surumu.txt 2>/dev/null || echo yok)
+          echo "Electron: $eski_e -> $yeni_e | Tor: $eski_t -> $yeni_t"
+          if [ "$eski_e" != "$yeni_e" ] || [ "$eski_t" != "$yeni_t" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "$yeni_t" > tor-surumu.txt
+            npm version patch --no-git-tag-version
+            echo "yayinla=evet" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Duman testi (Umbra açılıyor mu?)
+        if: steps.guncel.outputs.yayinla == 'evet'
+        run: npx electron . --duman-testi --disable-gpu
+
+      - name: Sürümü kaydet
+        if: steps.guncel.outputs.yayinla == 'evet'
+        run: |
+          git config user.name "umbra-bot"
+          git config user.email "umbra-bot@users.noreply.github.com"
+          git add package.json package-lock.json tor-surumu.txt
+          git commit -m "Güvenlik güncellemesi: v$(node -p "require('./package.json').version")"
+          git push
+
+      - name: Derle ve yayınla
+        if: steps.guncel.outputs.yayinla == 'evet'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish always

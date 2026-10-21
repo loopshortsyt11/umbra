@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <title>Umbra AI</title>
+  <link rel="stylesheet" href="stil.css">
+</head>
+<body>
+  <header>
+    <b>✨ Umbra AI</b>
+    <span class="bosluk"></span>
+    <button id="yeni" class="ikon" title="Yeni sohbet">⟲</button>
+    <button id="ayar" class="ikon" title="API anahtarı">⚙</button>
+    <button id="kapat" class="ikon" title="Paneli kapat (Alt+A)">×</button>
+  </header>
+
+  <section id="kurulum" hidden>
+    <h2>Claude'u bağla</h2>
+    <p>Umbra AI, Anthropic'in Claude Opus 5.5 modelini kullanır. Bunun için bir API anahtarı gerekir:</p>
+    <ol>
+      <li><a href="#" id="konsol">console.anthropic.com</a> adresinde hesap aç.</li>
+      <li><b>API Keys</b> bölümünden yeni anahtar oluştur ve kopyala.</li>
+      <li>Aşağıya yapıştır.</li>
+    </ol>
+    <form id="anahtar-formu">
+      <input id="anahtar" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+      <button type="submit">Kaydet</button>
+    </form>
+    <p id="kurulum-mesaj" class="mesaj"></p>
+    <p class="not">Anahtar bu bilgisayarda Windows şifrelemesiyle saklanır; web sayfaları ona erişemez. Kullanım ücreti Anthropic hesabından düşer.</p>
+    <button id="anahtar-sil" class="metin-dugme" hidden>Kayıtlı anahtarı sil</button>
+  </section>
+
+  <section id="sohbet" hidden>
+    <div id="mesajlar">
+      <div id="karsilama">
+        <p>Bu sayfa hakkında ne bilmek istersin?</p>
+        <div id="kisayollar">
+          <button data-soru="Bu sayfayı kısaca özetle.">📝 Sayfayı özetle</button>
+          <button data-soru="Bu sayfadaki en önemli noktaları madde madde çıkar.">📌 Önemli noktalar</button>
+          <button data-soru="Bu sayfanın ana içeriğini Türkçeye çevir.">🌐 Türkçeye çevir</button>
+          <button data-soru="Bu sayfayı hiç bilgisi olmayan birine basitçe açıkla.">💡 Basitçe açıkla</button>
+        </div>
+      </div>
+    </div>
+    <div id="alt">
+      <label id="baglam"><input type="checkbox" id="sayfa-dahil" checked> <span id="baglam-yazi">Bu sayfayı bağlam olarak ekle</span></label>
+      <form id="soru-formu">
+        <textarea id="soru" rows="2" placeholder="Bir şey sor… (Enter: gönder, Shift+Enter: yeni satır)"></textarea>
+        <button type="submit" id="gonder">➤</button>
+      </form>
+    </div>
+  </section>
+  <script src="panel.js"></script>
+</body>
+</html>

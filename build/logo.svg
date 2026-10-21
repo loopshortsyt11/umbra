@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Arka plan: derin gece mavisi, hafif merkez aydınlığı -->
+    <radialGradient id="zemin" cx="50%" cy="42%" r="75%">
+      <stop offset="0" stop-color="#1b1640"/>
+      <stop offset="0.55" stop-color="#0d0b22"/>
+      <stop offset="1" stop-color="#05050d"/>
+    </radialGradient>
+    <!-- Korona renk geçişi: menekşe → mavi → camgöbeği -->
+    <linearGradient id="korona" x1="0.15" y1="0.9" x2="0.85" y2="0.1">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="0.5" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <radialGradient id="hale" cx="50%" cy="50%" r="50%">
+      <stop offset="0.62" stop-color="#7c6cff" stop-opacity="0"/>
+      <stop offset="0.72" stop-color="#7c6cff" stop-opacity="0.55"/>
+      <stop offset="0.86" stop-color="#4f46e5" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#4f46e5" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="ay" cx="38%" cy="32%" r="80%">
+      <stop offset="0" stop-color="#1a1a2e"/>
+      <stop offset="1" stop-color="#06060c"/>
+    </radialGradient>
+    <radialGradient id="parilti" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.25" stop-color="#e0fbff"/>
+      <stop offset="0.6" stop-color="#22d3ee" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="isima" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <filter id="yumusak" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <clipPath id="kare">
+      <rect x="32" y="32" width="960" height="960" rx="216"/>
+    </clipPath>
+  </defs>
+
+  <!-- Yuvarlatılmış kare zemin (modern uygulama simgesi biçimi) -->
+  <g clip-path="url(#kare)">
+    <rect x="32" y="32" width="960" height="960" fill="url(#zemin)"/>
+    <!-- uzak yıldızlar -->
+    <g fill="#ffffff">
+      <circle cx="190" cy="230" r="3" opacity="0.5"/>
+      <circle cx="820" cy="190" r="2.5" opacity="0.45"/>
+      <circle cx="860" cy="770" r="3" opacity="0.35"/>
+      <circle cx="160" cy="820" r="2" opacity="0.4"/>
+      <circle cx="300" cy="120" r="2" opacity="0.3"/>
+      <circle cx="900" cy="470" r="2" opacity="0.3"/>
+    </g>
+    <!-- geniş korona halesi -->
+    <circle cx="512" cy="512" r="430" fill="url(#hale)"/>
+  </g>
+
+  <!-- Işıyan korona halkası -->
+  <circle cx="512" cy="512" r="300" fill="none" stroke="url(#korona)" stroke-width="54" filter="url(#isima)" opacity="0.9"/>
+  <circle cx="512" cy="512" r="300" fill="none" stroke="url(#korona)" stroke-width="20" filter="url(#yumusak)"/>
+  <circle cx="512" cy="512" r="300" fill="none" stroke="url(#korona)" stroke-width="9"/>
+
+  <!-- Ay diski: ışığı keser, sol alt kenarda ince bir hilal bırakır -->
+  <circle cx="530" cy="494" r="294" fill="url(#ay)"/>
+  <circle cx="530" cy="494" r="294" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
+
+  <!-- Elmas yüzük parıltısı -->
+  <circle cx="725" cy="300" r="70" fill="url(#parilti)" filter="url(#yumusak)"/>
+  <circle cx="725" cy="300" r="15" fill="#ffffff"/>
+  <path d="M725 210 L733 292 L815 300 L733 308 L725 390 L717 308 L635 300 L717 292 Z" fill="#ffffff" opacity="0.85"/>
+</svg>

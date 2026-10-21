@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <!-- Gizli/Tor sekmelerinin yerel başlangıç sayfası: hiçbir dış kaynak yüklemez, köprü (preload) yoktur -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'">
+  <title>Yeni sekme</title>
+  <link rel="stylesheet" href="baslangic.css">
+</head>
+<body>
+  <main>
+    <img class="logo" src="logo.png" alt="">
+    <h1>Umbra</h1>
+    <p id="etiket" class="etiket"></p>
+    <form id="form" class="kutu">
+      <span class="buyutec">🔍</span>
+      <input id="q" type="search" autocomplete="off" spellcheck="false">
+    </form>
+    <ul id="aciklama" class="aciklama"></ul>
+  </main>
+  <script src="baslangic.js"></script>
+</body>
+</html>

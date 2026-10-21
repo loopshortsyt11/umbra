@@ -1,0 +1,27 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 15px/1.5 "Segoe UI", system-ui, sans-serif; color: #e6e8ec;
+  background: radial-gradient(ellipse at 50% 0%, #2c2050 0%, #17132b 45%, #0d0b18 100%);
+}
+body.tor { background: radial-gradient(ellipse at 50% 0%, #1d4a42 0%, #122722 45%, #0a1512 100%); }
+main { max-width: 620px; margin: 0 auto; padding: 14vh 24px 40px; text-align: center; }
+.logo { width: 96px; height: 96px; filter: drop-shadow(0 10px 40px #6d5cff55); }
+h1 {
+  margin: 8px 0 4px; font-size: 36px; letter-spacing: 1px;
+  background: linear-gradient(90deg, #c4b5fd, #67e8f9); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.etiket { margin: 0 0 26px; color: #c4b5fd; font-weight: 600; }
+body.tor .etiket { color: #7ee2c4; }
+.kutu {
+  display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 20px;
+  background: #00000055; border: 1px solid #ffffff22; border-radius: 28px; transition: border-color .15s, box-shadow .15s;
+}
+.kutu:focus-within { border-color: #8b7cff; box-shadow: 0 0 0 4px #8b7cff26; }
+body.tor .kutu:focus-within { border-color: #4fd1b0; box-shadow: 0 0 0 4px #4fd1b026; }
+.kutu input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: inherit; font: inherit; font-size: 17px; }
+.buyutec { opacity: .6; }
+.aciklama { list-style: none; padding: 0; margin: 32px auto 0; max-width: 480px; text-align: left; color: #aab0bd; font-size: 13px; }
+.aciklama li { padding: 6px 0 6px 26px; position: relative; }
+.aciklama li::before { content: '✓'; position: absolute; left: 4px; color: #a78bfa; font-weight: 700; }
+body.tor .aciklama li::before { color: #4fd1b0; }
