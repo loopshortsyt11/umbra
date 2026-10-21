@@ -7,6 +7,7 @@ const { Asistan } = require('./ai');
 const { Veri, ARAMA_MOTORLARI, OZEL_MOTORLAR, OZEL_BASLANGIC } = require('./veri');
 const { TurboIndir } = require('./turboindir');
 const { Guncelleyici } = require('./guncelleme');
+const { webArama } = require('./arama');
 
 const UI_YUKSEKLIK = 82;
 const PANEL_GENISLIK = 400;
@@ -141,9 +142,23 @@ function icZaman(url) {
   return ZAMANLAR.includes(z) ? z : '';
 }
 
-function icYukle(wc, sayfa, sorgu, zaman) {
-  const query = { ...(sorgu ? { q: sorgu } : {}), ...(sorgu && zaman ? { zaman } : {}) };
-  wc.loadFile(path.join(__dirname, 'ic', 'index.html'), { hash: sayfa, ...(sorgu ? { query } : {}) });
+// umbra://ara?q=...&mod=gorsel adresindeki arama türü; yoksa "Tümü"
+const ARAMA_MODLARI = ['ai', 'gorsel', 'video', 'haber'];
+function icMod(url) {
+  const m = /\?(.*)$/.exec(String(url || '').trim());
+  const d = m ? new URLSearchParams(m[1]).get('mod') : '';
+  return ARAMA_MODLARI.includes(d) ? d : '';
+}
+
+// Sorgu, zaman ve arama türü umbra://ara adresinin parametreleridir
+function icParametre(s) {
+  if (!s.icSorgu) return null;
+  return new URLSearchParams({ q: s.icSorgu, ...(s.icMod ? { mod: s.icMod } : {}), ...(s.icZaman ? { zaman: s.icZaman } : {}) });
+}
+
+function icYukle(wc, sayfa, s) {
+  const p = icParametre(s);
+  wc.loadFile(path.join(__dirname, 'ic', 'index.html'), { hash: sayfa, ...(p ? { query: Object.fromEntries(p) } : {}) });
 }
 
 function kokeni(url) {
@@ -522,7 +537,7 @@ function aktifWc() {
 
 function sekmeAdresi(s) {
   if (s.tur === 'ic') {
-    const p = s.icSorgu ? new URLSearchParams({ q: s.icSorgu, ...(s.icZaman ? { zaman: s.icZaman } : {}) }) : null;
+    const p = icParametre(s);
     return `umbra://${s.icSayfa}${p ? '?' + p : ''}`;
   }
   if (s.torBekliyor) return '';
@@ -683,7 +698,7 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
       },
   });
   view.setBackgroundColor(tur === 'ic' ? '#1f2228' : '#ffffff');
-  const sekme = { id, view, tur, icSayfa: ic, icSorgu: ic ? icSorgu(url) : '', icZaman: ic ? icZaman(url) : '', istenenAdres: url, favicon: '', hataAdresi: null, torBekliyor: false, bekleyenAdres: null };
+  const sekme = { id, view, tur, icSayfa: ic, icSorgu: ic ? icSorgu(url) : '', icZaman: ic ? icZaman(url) : '', icMod: ic ? icMod(url) : '', istenenAdres: url, favicon: '', hataAdresi: null, torBekliyor: false, bekleyenAdres: null };
   sekmeler.set(id, sekme);
   if (konum !== null) sirayaKoy(id, konum);
   const wc = view.webContents;
@@ -769,7 +784,7 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
   if (tur !== 'ic') wc.on('context-menu', (_e, p) => sagTikMenusu(wc, p, tur));
 
   if (tur === 'ic') {
-    icYukle(wc, ic, sekme.icSorgu, sekme.icZaman);
+    icYukle(wc, ic, sekme);
   } else if (tur === 'tor') {
     sekme.torBekliyor = true;
     sekme.bekleyenAdres = url;
@@ -822,7 +837,8 @@ function git(s, url) {
     s.icSayfa = ic;
     s.icSorgu = icSorgu(url);
     s.icZaman = icZaman(url);
-    icYukle(s.view.webContents, ic, s.icSorgu, s.icZaman);
+    s.icMod = icMod(url);
+    icYukle(s.view.webContents, ic, s);
     oturumuKaydet();
     return arayuzuGuncelle();
   }
@@ -1004,9 +1020,45 @@ function siradakiSekme(yon) {
   sekmeyeGec(sira[(i + yon + sira.length) % sira.length]);
 }
 
-function adresCubugunaOdaklan() {
+// metin verilirse adres çubuğuna yazılır (yeni sekme sayfasındaki kutuya yazmaya başlayınca, Chrome'daki gibi)
+function adresCubugunaOdaklan(metin = '') {
   arayuz.webContents.focus();
-  arayuz.webContents.send('focus:address');
+  arayuz.webContents.send('focus:address', String(metin).slice(0, 2000));
+}
+
+// Arama önerileri ve klasik arama sonuçları için ayrı, yalnızca bellekte tutulan oturum: arama siteleri,
+// kullanıcının gezdiği sitelerdeki çerezleri göremez ve aramaları hesaba bağlayamaz.
+let aramaOturumuNesnesi = null;
+function aramaOturumu() {
+  if (!aramaOturumuNesnesi) {
+    aramaOturumuNesnesi = session.fromPartition('umbra-arama');
+    sertlestir(aramaOturumuNesnesi, 'arama');
+  }
+  return aramaOturumuNesnesi;
+}
+
+// Adres çubuğu için arama önerileri (DuckDuckGo; hesap istemez, iz sürmez). Şifreli DNS ve izleyici engelleme
+// bu isteklere de uygulanır. Tor sekmelerinde yazılanlar hiçbir yere gönderilmez.
+const oneriOnbellegi = new Map();
+async function aramaOnerileri(metin) {
+  const q = String(metin || '').trim().slice(0, 200);
+  const s = aktifSekme();
+  if (!q || !veri.ayarlar.aramaOnerileri || !s || s.tur === 'tor' || webAdresiMi(q) || icSayfa(q)) return [];
+  if (oneriOnbellegi.has(q)) return oneriOnbellegi.get(q);
+  const ses = aramaOturumu();
+  try {
+    const yanit = await ses.fetch(`https://duckduckgo.com/ac/?type=list&kl=tr-tr&q=${encodeURIComponent(q)}`, {
+      signal: AbortSignal.timeout(2000), headers: { Accept: 'application/json' },
+    });
+    const veriler = await yanit.json();
+    const liste = (Array.isArray(veriler?.[1]) ? veriler[1] : [])
+      .filter((x) => typeof x === 'string' && x.trim() && x.toLowerCase() !== q.toLowerCase()).slice(0, 5);
+    oneriOnbellegi.set(q, liste);
+    if (oneriOnbellegi.size > 200) oneriOnbellegi.delete(oneriOnbellegi.keys().next().value);
+    return liste;
+  } catch {
+    return [];
+  }
 }
 
 function bulAc() {
@@ -1175,6 +1227,12 @@ async function icEylem(e, eylem, ...arg) {
     }
     case 'ara-durdur': asistan.aramayiDurdur(); return;
     case 'ara-motor': return { tamam: veri.ayarla('aramaMotoru', 'umbra') };
+    case 'adres-cubuguna': return adresCubugunaOdaklan(arg[0]);
+    case 'web-ara': {
+      const mod = ['tumu', 'gorsel', 'video', 'haber'].includes(arg[0]) ? arg[0] : 'tumu';
+      const devam = arg[3] && typeof arg[3] === 'object' ? Object.fromEntries(Object.entries(arg[3]).map(([k, v]) => [String(k), String(v)])) : null;
+      return webArama(aramaOturumu(), mod, String(arg[1] || ''), { zaman: ZAMANLAR.includes(arg[2]) ? arg[2] : '', devam });
+    }
     case 'disa-aktar': {
       const tarih = new Date().toISOString().slice(0, 10);
       const { canceled, filePath } = await dialog.showSaveDialog(pencere, {
@@ -1243,6 +1301,7 @@ function ipcKur() {
     if (wc) { wc.stopFindInPage('clearSelection'); wc.focus(); }
   });
   ipcMain.handle('oneri:al', (e, metin) => (uiMi(e) ? veri.oneriler(String(metin)) : []));
+  ipcMain.handle('oneri:arama', (e, metin) => (uiMi(e) ? aramaOnerileri(metin) : []));
 
   // Video üstü "İndir ▼" düğmesi kanalları: yalnızca normal sekmelerin ana çerçevesindeki Umbra kodu çağırabilir.
   // Sayfa adresi gönderenden değil, sekmenin kendisinden alınır; diğer alanlar tek tek doğrulanır.

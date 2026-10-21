@@ -78,6 +78,20 @@ module.exports = async function arayuzTesti(u) {
     }
   }
 
+  // Yeni sekme sayfasındaki kutuya yazılan metin adres çubuğuna aktarılır (Chrome gibi); Enter orada basılır
+  async function yeniSekmeKutusunaYaz(metin) {
+    await tikla('.arama-kutusu input', { wc: aktifWc() });
+    await aktifWc().insertText(metin);
+    await kosul(async () => (await ui().executeJavaScript('document.getElementById("adres").value')).startsWith(metin), 3000, 'yazının adres çubuğuna aktarılması');
+    await bekle(150);
+    // satır içi tamamlama eklendiyse yazılanla sınırlı kalsın
+    await ui().executeJavaScript(`(() => { const a = document.getElementById("adres"); a.value = ${JSON.stringify(metin)}; })()`);
+    ui().sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+    ui().sendInputEvent({ type: 'char', keyCode: String.fromCharCode(13) });
+    ui().sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+    await bekle(300);
+  }
+
   // anahtarsiz: AI anahtarının olmadığı durumu sınayan test; UMBRA_TEST_ANAHTAR_KLASORU verilmişse atlanır
   async function test(ad, fn, { anahtarsiz = false } = {}) {
     if (filtre && !new RegExp(filtre).test(ad)) return;
@@ -213,7 +227,7 @@ module.exports = async function arayuzTesti(u) {
 
   await test('Yeni sekme sayfasındaki arama kutusu adrese gider', async () => {
     await kosul(async () => (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'arama kutusunun yüklenmesi');
-    await yazEnter('.arama-kutusu input', 'example.net', aktifWc());
+    await yeniSekmeKutusunaYaz('example.net');
     await adresBekle('example.net', 15000);
   });
 
@@ -487,7 +501,7 @@ module.exports = async function arayuzTesti(u) {
     await tikla('#yeni-sekme');
     await kosul(async () => !aktifWc().isLoading() && (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
     const n = u.sekmeler.size;
-    await yazEnter('.arama-kutusu input', 'example.com', aktifWc());
+    await yeniSekmeKutusunaYaz('example.com');
     await adresBekle('example.com', 15000);
     if (u.sekmeler.size !== n) throw new Error('sekme sayısı değişti');
     await kosul(async () => !(await ui().executeJavaScript('document.getElementById("geri").disabled')), 3000, 'geri düğmesinin etkin olması');
@@ -515,7 +529,9 @@ module.exports = async function arayuzTesti(u) {
     await goruntuKaydet(aktifWc(), 'umbra-arama-sekmeleri.png');
     const gorsel = await aktifWc().executeJavaScript('[...document.querySelectorAll(".dikeyler a.dikey")].findIndex((a) => a.textContent === "Görseller") + 1');
     await tikla(`.dikeyler a.dikey:nth-of-type(${gorsel})`, { wc: aktifWc() });
-    await adresBekle('search.brave.com/images?q=kedi', 15000);
+    await adresBekle('mod=gorsel', 5000);
+    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll(".gorsel-kutu img").length')) > 5, 20000, 'görsel sonuçları');
+    if (/brave|bing|duckduckgo/i.test(u.sekmeAdresi(u.aktifSekme()))) throw new Error('adres çubuğunda başka arama motoru görünüyor');
     await tikla('#geri');
     await adresBekle('umbra://ara?q=kedi', 5000);
     // Araçlar → Son 1 hafta
@@ -526,11 +542,62 @@ module.exports = async function arayuzTesti(u) {
     await adresBekle('zaman=hafta', 5000);
   });
 
+  await test('Tümü: arama Umbra sayfasında klasik web sonuçlarıyla açılır, sonuca tıklayınca site açılır', async () => {
+    await tikla('#yeni-sekme');
+    await yazEnter('#adres', 'umbra://ara?q=' + encodeURIComponent('istanbul boğazı'));
+    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll(".web-sonuc").length')) >= 5, 20000, 'web sonuçları');
+    await bekle(600);
+    await goruntuKaydet(aktifWc(), 'umbra-tumu.png');
+    const ilk = await aktifWc().executeJavaScript('document.querySelector(".web-sonuc a.web-baslik").title');
+    if (!/^https:\/\//.test(ilk) || /bing\.com|duckduckgo\.com/.test(ilk)) throw new Error('sonuç bağlantısı doğrudan siteye gitmiyor: ' + ilk);
+    const aktifSekmeAdi = await aktifWc().executeJavaScript('document.querySelector(".dikeyler a.dikey.aktif").textContent');
+    if (aktifSekmeAdi !== 'Tümü') throw new Error('varsayılan sekme Tümü değil: ' + aktifSekmeAdi);
+    await tikla('.web-sonuc a.web-baslik', { wc: aktifWc() });
+    await kosul(() => u.sekmeAdresi(u.aktifSekme()).startsWith('https://'), 15000, 'sitenin açılması');
+    await tikla('#geri');
+    await adresBekle('umbra://ara?q=', 5000);
+  });
+
+  await test('Görseller: önizleme açılır, Esc ile kapanır; Videolar ve Haberler sonuç verir', async () => {
+    await yazEnter('#adres', 'umbra://ara?mod=gorsel&q=kedi');
+    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll(".gorsel-kutu").length')) > 5, 20000, 'görseller');
+    await bekle(1500);
+    await goruntuKaydet(aktifWc(), 'umbra-gorseller.png');
+    await tikla('.gorsel-kutu', { wc: aktifWc() });
+    await kosul(async () => aktifWc().executeJavaScript('!!document.querySelector(".onizleme")'), 3000, 'önizleme');
+    await bekle(1200);
+    await goruntuKaydet(aktifWc(), 'umbra-onizleme.png');
+    aktifWc().sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    aktifWc().sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+    await kosul(async () => aktifWc().executeJavaScript('!document.querySelector(".onizleme")'), 3000, 'önizlemenin kapanması');
+    await yazEnter('#adres', 'umbra://ara?mod=video&q=kedi');
+    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll(".video-sonuc").length')) > 3, 20000, 'videolar');
+    await yazEnter('#adres', 'umbra://ara?mod=haber&q=' + encodeURIComponent('istanbul'));
+    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll(".haber-sonuc").length')) > 2, 20000, 'haberler');
+  });
+
+  await test('Adres çubuğu: "wiki" yazınca "wikipedia" olarak tamamlanır ve Vikipedi açılır', async () => {
+    await tikla('#yeni-sekme');
+    await kosul(async () => !aktifWc().isLoading() && (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
+    await bekle(400);
+    await tikla('#adres');
+    await ui().insertText('wiki');
+    await kosul(async () => (await ui().executeJavaScript('document.getElementById("adres").value')) === 'wikipedia', 3000, 'satır içi tamamlama');
+    const secim = await ui().executeJavaScript('[document.getElementById("adres").selectionStart, document.getElementById("adres").selectionEnd]');
+    if (secim[0] !== 4 || secim[1] !== 9) throw new Error('tamamlanan kısım seçili değil: ' + secim);
+    const ilkOneri = await ui().executeJavaScript('document.querySelector("#oneriler .oneri")?.innerText || ""');
+    if (!ilkOneri.includes('wikipedia')) throw new Error('ilk öneri Vikipedi değil: ' + ilkOneri);
+    ui().sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+    ui().sendInputEvent({ type: 'char', keyCode: String.fromCharCode(13) });
+    ui().sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+    await adresBekle('wikipedia.org', 15000);
+  });
+
   await test('Arkada saklanan sayfa adresini değiştirince görünen sekme kapanmaz', async () => {
     // yeni sekme (A) → web (B, A arkada) → umbra://gecmis (C, B arkada); sonra B kendi adresini pushState ile değiştirir
     await tikla('#yeni-sekme');
     await kosul(async () => !aktifWc().isLoading() && (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
-    await yazEnter('.arama-kutusu input', 'example.com', aktifWc());
+    await yeniSekmeKutusunaYaz('example.com');
     await adresBekle('example.com', 15000);
     await kosul(() => !aktifWc().isLoading(), 15000, 'yükleme');
     await yazEnter('#adres', 'umbra://gecmis');
@@ -548,7 +615,7 @@ module.exports = async function arayuzTesti(u) {
   if (process.env.UMBRA_TEST_ANAHTAR_KLASORU) {
     await test('Umbra Arama: web sonuçları yanıttan önce görünür, aşama ve süre ilerler (ücretli)', async () => {
       await tikla('#yeni-sekme');
-      await yazEnter('#adres', 'umbra://ara?q=' + encodeURIComponent('istanbul yarın hava durumu'));
+      await yazEnter('#adres', 'umbra://ara?mod=ai&q=' + encodeURIComponent('istanbul yarın hava durumu'));
       await kosul(async () => (await konum('.yanit-durum', aktifWc())) !== null, 5000, 'arama sayfası');
       let onceSonuc = false, sureIlerledi = false, asamalar = new Set();
       const bitis = Date.now() + 90000;

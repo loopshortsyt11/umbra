@@ -51,11 +51,11 @@ function onerileriGoster() {
     el.className = 'oneri' + (i === seciliOneri ? ' secili' : '');
     const tur = document.createElement('span');
     tur.className = 'tur';
-    tur.textContent = { yerimi: '☆', ara: '🔍', site: '🌐' }[o.tur] || '🕘';
+    tur.textContent = { yerimi: '☆', ara: '🔍', oneri: '🔍', site: '🌐' }[o.tur] || '🕘';
     const metin = document.createElement('span');
     metin.className = 'metin';
     metin.textContent = o.baslik || o.url;
-    if (o.tur !== 'ara') {
+    if (o.tur !== 'ara' && o.tur !== 'oneri') {
       const kucuk = document.createElement('small');
       kucuk.textContent = o.url;
       metin.append(kucuk);
@@ -74,20 +74,43 @@ function oneriSec(i) {
   if (!o) return;
   onerileriGizle();
   adresDuzenleniyor = false;
-  umbra.git(o.tur === 'ara' ? '?' + o.baslik : o.url); // "?" öneki: site tahmini yapılmadan aranır
+  const aramaMi = o.tur === 'ara' || o.tur === 'oneri';
+  umbra.git(aramaMi ? '?' + o.baslik : o.url); // "?" öneki: site tahmini yapılmadan aranır
   adres.blur();
 }
 
-async function onerileriGetir() {
-  const metin = adres.value;
+// silme: son girdi bir silme işlemiyse satır içi tamamlama yapılmaz (Chrome'daki gibi; yoksa silinen geri gelir)
+async function onerileriGetir(silme = false) {
+  // Satır içi tamamlamayla seçili kalan kısım öneri sorgusuna dahil edilmez
+  const metin = adres.selectionEnd === adres.value.length && adres.selectionStart < adres.selectionEnd
+    ? adres.value.slice(0, adres.selectionStart) : adres.value;
   const istek = ++oneriIstek;
   if (!metin.trim()) return onerileriGizle();
   const bulunan = await umbra.oneriler(metin);
   if (istek !== oneriIstek || document.activeElement !== adres) return;
   // Tahmin edilen site (ör. "youtube" → youtube.com) en üstte; Enter'ın gideceği yer de odur
   const site = bulunan.filter((o) => o.tur === 'site');
-  oneriler = [...site, { tur: 'ara', baslik: metin.trim().replace(/^\?/, ''), url: '' }, ...bulunan.filter((o) => o.tur !== 'site')];
+  const yerel = bulunan.filter((o) => o.tur !== 'site');
+  const araSatiri = { tur: 'ara', baslik: metin.trim().replace(/^\?/, ''), url: '' };
+  oneriler = [...site, araSatiri, ...yerel];
   seciliOneri = -1;
+
+  // Satır içi tamamlama: "wiki" yazınca "wiki|pedia" (eklenen kısım seçili; yazmaya devam edince kaybolur)
+  const tamamla = site[0] && site[0].tamamla;
+  if (!silme && tamamla && tamamla.length > metin.length && tamamla.startsWith(metin.toLowerCase()) && adres.value === metin) {
+    adres.value = metin + tamamla.slice(metin.length);
+    adres.setSelectionRange(metin.length, adres.value.length);
+  }
+  onerileriGoster();
+
+  // Arama önerileri (ağdan) gelince arama satırının altına eklenir
+  const uzak = await umbra.aramaOnerileri(metin);
+  if (istek !== oneriIstek || document.activeElement !== adres || !uzak.length) return;
+  const gorulen = new Set([araSatiri.baslik.toLowerCase(), ...yerel.map((o) => (o.baslik || '').toLowerCase())]);
+  const ekler = uzak.filter((x) => !gorulen.has(x.toLowerCase())).slice(0, 8 - oneriler.length)
+    .map((x) => ({ tur: 'oneri', baslik: x, url: '' }));
+  const i = oneriler.indexOf(araSatiri) + 1;
+  oneriler = [...oneriler.slice(0, i), ...ekler, ...oneriler.slice(i)];
   onerileriGoster();
 }
 
@@ -110,7 +133,7 @@ adres.addEventListener('mouseup', (e) => {
   if (adres.selectionStart === adres.selectionEnd) { e.preventDefault(); adres.select(); }
 });
 adres.addEventListener('blur', () => { adresDuzenleniyor = false; onerileriGizle(); });
-adres.addEventListener('input', () => { adresDuzenleniyor = true; onerileriGetir(); });
+adres.addEventListener('input', (e) => { adresDuzenleniyor = true; onerileriGetir(/^delete/.test(e.inputType || '')); });
 adres.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!oneriKutusu.hidden) onerileriGizle();
@@ -120,11 +143,22 @@ adres.addEventListener('keydown', (e) => {
     const n = oneriler.length;
     seciliOneri = e.key === 'ArrowDown' ? (seciliOneri + 1) % n : (seciliOneri - 1 + n) % n;
     const o = oneriler[seciliOneri];
-    adres.value = o.tur === 'ara' ? o.baslik : o.url;
+    adres.value = o.tur === 'ara' || o.tur === 'oneri' ? o.baslik : o.url;
     onerileriGoster();
   }
 });
-umbra.odakDinle(() => { adres.focus(); adres.select(); });
+// metin: yeni sekme sayfasındaki kutuya yazılmaya başlanan metin (Chrome'daki gibi adres çubuğuna aktarılır)
+umbra.odakDinle((metin) => {
+  adres.focus();
+  if (metin) {
+    adres.value = metin;
+    adres.setSelectionRange(metin.length, metin.length);
+    adresDuzenleniyor = true;
+    onerileriGetir();
+  } else {
+    adres.select();
+  }
+});
 
 // --- Sayfada bul ---
 const bul = $('bul');

@@ -24,6 +24,7 @@ const VARSAYILAN_AYARLAR = {
   acilis: 'yeni-sekme',      // Chrome'daki gibi: 'yeni-sekme' ya da 'devam' (kaldığın yerden devam et)
   izleyiciEngelle: true,
   turboIndir: true,          // normal sekmelerdeki indirmeleri TurboIndir'e devret (gizli/Tor'da asla)
+  aramaOnerileri: true,      // adres çubuğuna yazılanlar için DuckDuckGo arama önerileri (Tor sekmelerinde asla)
 };
 
 const GECMIS_SINIRI = 10000;
@@ -194,11 +195,36 @@ class Veri {
     return BILINEN_SITELER[ad] ? `https://${BILINEN_SITELER[ad]}/` : null;
   }
 
+  // Yazılan önekle başlayan siteyi bulur ("wiki" → wikipedia): önce geçmiş/yer imlerinde en çok ziyaret edilen,
+  // sonra bilinen siteler. Satır içi tamamlama (Chrome'daki gibi) ve öneri listesinin ilk satırı için.
+  siteTamamla(girdi) {
+    const onek = String(girdi || '').trim().toLowerCase();
+    if (!/^[a-z0-9-]{1,40}$/.test(onek)) return null;
+    const sayim = new Map();
+    for (const kayit of [...this.yerImleri, ...this.gecmis]) {
+      let u;
+      try { u = new URL(kayit.url); } catch { continue; }
+      if (u.protocol !== 'https:') continue;
+      const ad = u.hostname.replace(/^www\./, '').split('.')[0];
+      if (!ad.startsWith(onek)) continue;
+      const anahtar = `${ad}|${u.origin}`;
+      sayim.set(anahtar, (sayim.get(anahtar) || 0) + 1);
+    }
+    if (sayim.size) {
+      const [ad, koken] = [...sayim.entries()].sort((a, b) => b[1] - a[1])[0][0].split('|');
+      return { ad, url: koken + '/' };
+    }
+    const bilinen = Object.keys(BILINEN_SITELER).find((ad) => ad.startsWith(onek));
+    return bilinen ? { ad: bilinen, url: `https://${BILINEN_SITELER[bilinen]}/` } : null;
+  }
+
   // --- Adres çubuğu önerileri: tahmin edilen site, yer imleri, sonra sık ziyaret edilen geçmiş ---
   oneriler(metin, adet = 6) {
     const q = metin.trim().toLowerCase();
     if (!q) return [];
-    const site = this.siteTahmini(q);
+    const tam = this.siteTahmini(q);
+    const onek = tam ? null : this.siteTamamla(q);
+    const site = tam || onek?.url;
     if (site) adet -= 1;
     const uyar = (x) => x.url.toLowerCase().includes(q) || (x.baslik || '').toLowerCase().includes(q);
     const sonuc = [];
@@ -219,7 +245,13 @@ class Veri {
       if (sonuc.length >= adet) break;
       if (!gorulen.has(g.url)) { gorulen.add(g.url); sonuc.push({ url: g.url, baslik: g.baslik, tur: 'gecmis' }); }
     }
-    if (site) sonuc.unshift({ url: site, baslik: new URL(site).hostname.replace(/^www\./, ''), tur: 'site' });
+    if (site) {
+      // tamamla: satır içi tamamlamada adres çubuğuna yazılacak kelime ("wiki" → "wikipedia")
+      const tamamla = tam ? q : onek.ad;
+      const kopya = sonuc.findIndex((o) => o.url === site);
+      if (kopya >= 0) sonuc.splice(kopya, 1);
+      sonuc.unshift({ url: site, baslik: new URL(site).hostname.replace(/^www\./, ''), tur: 'site', tamamla });
+    }
     return sonuc;
   }
 
