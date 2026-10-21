@@ -248,6 +248,34 @@ module.exports = async function arayuzTesti(u) {
     yerIminiTemizle(url);
   });
 
+  // Google/Apple ile giriş: site küçük bir pencere açar ve sonucu window.opener ile geri alır (claude.ai gibi)
+  await test('Giriş penceresi açılır pencere olarak açılır ve açan sayfayla haberleşir', async () => {
+    const { BrowserWindow } = require('electron');
+    if (!/^https:\/\/example\.com/.test(u.sekmeAdresi(u.aktifSekme()))) {
+      await yazEnter('#adres', 'example.com');
+      await adresBekle('example.com', 15000);
+    }
+    await kosul(() => !aktifWc().isLoading(), 15000, 'yüklemenin bitmesi');
+    const sekmeSayisi = u.sekmeler.size;
+    const once = BrowserWindow.getAllWindows().length;
+    await aktifWc().executeJavaScript(`window.__mesaj = null; window.addEventListener('message', (e) => { window.__mesaj = e.data; });
+      window.__giris = window.open('https://example.com/?giris', 'giris', 'width=480,height=600'); true`, true);
+    await kosul(() => BrowserWindow.getAllWindows().length === once + 1, 5000, 'açılır pencerenin açılması');
+    if (u.sekmeler.size !== sekmeSayisi) throw new Error('giriş penceresi sekmeye çevrildi');
+    const acilir = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('giris') || w.webContents.isLoading());
+    await kosul(() => acilir.webContents.getURL().includes('giris') && !acilir.webContents.isLoading(), 15000, 'giriş sayfasının yüklenmesi');
+    if (acilir.webContents.session !== aktifWc().session) throw new Error('açılır pencere farklı oturumda');
+    await acilir.webContents.executeJavaScript(`window.opener.postMessage('giris-tamam', '*'); true`);
+    await kosul(async () => (await aktifWc().executeJavaScript('window.__mesaj')) === 'giris-tamam', 3000, 'açan sayfanın mesajı alması');
+    // Google giriş düzeltmesi ("Bu tarayıcı güvenli olmayabilir") açılır pencerede de geçerli olmalı
+    await acilir.webContents.loadURL('https://accounts.google.com/');
+    const marka = await acilir.webContents.executeJavaScript(
+      `(navigator.userAgentData?.brands || []).some((b) => b.brand === 'Google Chrome') && typeof window.chrome?.loadTimes === 'function'`);
+    if (!marka) throw new Error('açılır pencerede Google giriş düzeltmesi yok');
+    acilir.close();
+    await kosul(() => BrowserWindow.getAllWindows().length === once, 3000, 'pencerenin kapanması');
+  });
+
   await test('Yer işareti çubuğundaki öğeye tıklayınca site açılır', async () => {
     const hedef = 'https://example.com/';
     yerIminiTemizle(hedef);

@@ -687,10 +687,9 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
   if (ic) tur = 'ic';
   const id = ++sayac;
   const ses = tur === 'ic' ? session.defaultSession : oturumAl(tur);
-  const view = new WebContentsView({
-    webPreferences: tur === 'ic'
-      ? { preload: path.join(__dirname, 'ic', 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false }
-      : {
+  const webTercihleri = tur === 'ic'
+    ? { preload: path.join(__dirname, 'ic', 'preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false }
+    : {
         session: ses,
         sandbox: true,
         contextIsolation: true,
@@ -703,8 +702,8 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
         spellcheck: false,
         // Video üstündeki "İndir ▼" düğmesi yalnızca normal sekmelerde; gizli ve Tor sekmelerine hiçbir kod eklenmez
         ...(tur === 'normal' ? { preload: path.join(__dirname, 'sekme', 'preload.js') } : {}),
-      },
-  });
+      };
+  const view = new WebContentsView({ webPreferences: webTercihleri });
   view.setBackgroundColor(tur === 'ic' ? '#1f2228' : '#ffffff');
   const sekme = { id, view, tur, icSayfa: ic, icSorgu: ic ? icSorgu(url) : '', icZaman: ic ? icZaman(url) : '', icMod: ic ? icMod(url) : '', istenenAdres: url, favicon: '', hataAdresi: null, torBekliyor: false, bekleyenAdres: null };
   sekmeler.set(id, sekme);
@@ -715,8 +714,35 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
   wc.on('preload-error', (_e, yol, h) => console.error('Sekme ön yükleme hatası', yol, h));
 
   wc.setWindowOpenHandler(({ url: yeni, disposition }) => {
-    if (webAdresiMi(yeni) && tur !== 'ic') sekmeAc(yeni, tur, { arkaPlanda: disposition === 'background-tab' });
+    if (!webAdresiMi(yeni) || tur === 'ic') return { action: 'deny' };
+    // Boyut belirtilerek açılan pencereler (Google/Apple ile giriş gibi) Chrome'daki gibi gerçek açılır pencere olur:
+    // giriş sayfası sonucu kendisini açan sayfaya (window.opener) bildirir; sekmeye çevrilirse bu bağ kopar ve
+    // site onay beklerken takılır kalır. Açılır pencere aynı oturumu ve güvenlik ayarlarını devralır.
+    if (disposition === 'new-window') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          icon: SIMGE,
+          autoHideMenuBar: true,
+          backgroundColor: '#ffffff',
+          minimizable: false,
+          fullscreenable: false,
+          // Sekmeyle aynı oturum, aynı güvenlik ayarları ve aynı ön yükleme (Google giriş düzeltmesi dahil)
+          webPreferences: webTercihleri,
+        },
+      };
+    }
+    sekmeAc(yeni, tur, { arkaPlanda: disposition === 'background-tab' });
     return { action: 'deny' };
+  });
+  wc.on('did-create-window', (acilir) => {
+    acilir.setMenuBarVisibility(false);
+    // Açılır penceredeki bağlantılar yeni pencere değil, aynı türde sekme açar
+    acilir.webContents.setWindowOpenHandler(({ url: yeni }) => {
+      if (webAdresiMi(yeni)) sekmeAc(yeni, tur);
+      return { action: 'deny' };
+    });
+    if (tur === 'tor') acilir.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   });
 
   for (const olay of ['did-start-loading', 'did-stop-loading']) wc.on(olay, arayuzuGuncelle);
