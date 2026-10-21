@@ -26,7 +26,10 @@ html, body {
   user-select: none;
 }
 #ust { height: 82px; background: var(--zemin); }
-#sekmeler { display: flex; align-items: flex-end; height: 38px; padding: 0 6px; gap: 4px; }
+/* Sekme satırı pencerenin başlık çubuğudur: boş yerinden tutulup taşınır, çift tıklayınca büyür.
+   Sağdaki 140 px, Windows'un küçült/büyüt/kapat düğmelerine ayrılır. */
+#sekmeler { display: flex; align-items: flex-end; height: 38px; padding: 0 140px 0 6px; gap: 4px; -webkit-app-region: drag; }
+#sekmeler .sekme, #sekmeler button { -webkit-app-region: no-drag; }
 #sekme-listesi { display: flex; gap: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
 .sekme {
   display: flex; align-items: center; gap: 6px;

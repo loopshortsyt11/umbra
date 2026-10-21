@@ -24,6 +24,7 @@ kullanıcı büyük olasılıkla oraya gitmek istiyordur: ilk satırda resmi adr
 Bilgiyi aldığın sayfayı ilgili cümlenin sonunda [1], [2] gibi numarayla göster. Yanıtın en sonuna tek başına "KAYNAKLAR"
 satırını, ardından her kaynağı ayrı satırda "[numara] tam-adres" biçiminde yaz (yalnızca gerçekten kullandığın sayfalar).`;
 const ARAMA_ONBELLEK_SINIRI = 50;
+const ARAMA_ZAMAN_ASIMI = 90000;
 
 class Asistan {
   constructor(veriDizini) {
@@ -33,12 +34,14 @@ class Asistan {
     this.akis = null;
     this.aramaAkisi = null;
     this.aramaOnbellegi = new Map(); // sorgu -> sonuç; aynı arama yeniden açılınca tekrar ücretlendirilmez
-    const anahtar = this._anahtariOku();
-    if (anahtar) this.istemci = new Anthropic({ apiKey: anahtar });
+    // Anahtar zaman uyumsuz çözülür; çözülene kadar, dosya varsa anahtar "var" sayılır (açılışta milisaniyeler sürer)
+    this.dosyaVar = fs.existsSync(this.dosya);
+    this.yuklendi = false;
+    this.hazir = this._anahtariYukle().finally(() => { this.yuklendi = true; });
   }
 
   anahtarVar() {
-    return Boolean(this.istemci);
+    return Boolean(this.istemci) || (!this.yuklendi && this.dosyaVar);
   }
 
   async anahtarKaydet(anahtar) {
@@ -50,14 +53,16 @@ class Asistan {
     } catch (h) {
       throw new Error(hataMetni(h));
     }
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('Bu bilgisayarda şifreli saklama kullanılamıyor.');
-    fs.writeFileSync(this.dosya, safeStorage.encryptString(anahtar));
+    if (!(await safeStorage.isAsyncEncryptionAvailable())) throw new Error('Bu bilgisayarda şifreli saklama kullanılamıyor.');
+    fs.writeFileSync(this.dosya, await safeStorage.encryptStringAsync(anahtar));
     this.istemci = istemci;
+    this.dosyaVar = true;
   }
 
   anahtarSil() {
     try { fs.unlinkSync(this.dosya); } catch {}
     this.istemci = null;
+    this.dosyaVar = false;
     this.sifirla();
   }
 
@@ -72,6 +77,7 @@ class Asistan {
 
   // sayfa: { baslik, url, metin } veya null. parca(metin) her yeni metin parçasında çağrılır.
   async sor(soru, sayfa, parca) {
+    await this.hazir;
     if (!this.istemci) throw new Error('Önce API anahtarını girin.');
     if (this.akis) throw new Error('Önceki yanıt hâlâ yazılıyor.');
     const icerik = [];
@@ -113,16 +119,37 @@ class Asistan {
     if (this.aramaAkisi) this.aramaAkisi.abort();
   }
 
-  // Web'de arar; parca(metin) yanıt metni akarken çağrılır. Sonuç: yanıt parçaları (atıflarıyla), kaynaklar, web sonuçları.
-  async ara(sorgu, parca) {
+  // Web'de arar; parca(metin) yanıt metni akarken, durum({asama, ...}) aşamalar değiştikçe çağrılır
+  // (aranıyor → sonuclar [web sonuçları hemen gösterilsin diye] → yaziyor).
+  // Sonuç: yanıt parçaları (atıflarıyla), kaynaklar, web sonuçları.
+  async ara(sorgu, parca, durum = () => {}, zaman = '') {
+    await this.hazir;
     if (!this.istemci) throw new Error('Umbra Arama için API anahtarı gerekli.');
     sorgu = String(sorgu).trim().slice(0, 500);
-    if (this.aramaOnbellegi.has(sorgu)) return { ...this.aramaOnbellegi.get(sorgu), onbellekten: true };
+    const anahtar = zaman ? `${sorgu}|${zaman}` : sorgu;
+    if (this.aramaOnbellegi.has(anahtar)) return { ...this.aramaOnbellegi.get(anahtar), onbellekten: true };
     this.aramayiDurdur(); // aynı anda yalnızca bir arama yürür
 
-    const mesajlar = [{ role: 'user', content: sorgu }];
+    // Araçlar → zaman filtresi: Claude'a yalnızca o dönemin kaynaklarını kullanması söylenir
+    const donem = { gun: 'son 24 saat', hafta: 'son 1 hafta', ay: 'son 1 ay', yil: 'son 1 yıl' }[zaman];
+    const mesajlar = [{ role: 'user', content: donem ? `${sorgu}\n\n(Yalnızca ${donem} içinde yayımlanmış kaynakları kullan; daha eskileri yok say.)` : sorgu }];
     const bloklar = [];
     let son;
+    let zamanAsimi = false;
+    const sure = setTimeout(() => { zamanAsimi = true; this.aramayiDurdur(); }, ARAMA_ZAMAN_ASIMI);
+    // Akan olaylardan aşama bilgisi: arama başladı, sonuçlar geldi, yanıt yazılıyor
+    const olayIzle = (olay) => {
+      if (olay.type !== 'content_block_start') return;
+      const b = olay.content_block;
+      if (b.type === 'server_tool_use') durum({ asama: 'aranıyor' });
+      else if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) {
+        durum({
+          asama: 'sonuclar',
+          sonuclar: b.content.filter((r) => r.type === 'web_search_result' && r.url)
+            .map((r) => ({ url: r.url, baslik: r.title || r.url, yas: r.page_age || '' })),
+        });
+      } else if (b.type === 'text') durum({ asama: 'yaziyor' });
+    };
     try {
       // Sunucu tarafı arama döngüsü sınırına ulaşırsa (pause_turn) aynı konuşmayla devam edilir
       for (let tur = 0; tur < 4; tur++) {
@@ -138,15 +165,19 @@ class Asistan {
         });
         this.aramaAkisi = akis;
         akis.on('text', (t) => parca(t));
+        akis.on('streamEvent', olayIzle);
         son = await akis.finalMessage();
         bloklar.push(...son.content);
         if (son.stop_reason !== 'pause_turn') break;
         mesajlar.push({ role: 'assistant', content: son.content });
       }
     } catch (h) {
-      if (h instanceof Anthropic.APIUserAbortError) return { durduruldu: true };
+      if (h instanceof Anthropic.APIUserAbortError) {
+        return zamanAsimi ? { hata: 'Yanıt 90 saniyede gelmedi; arama durduruldu. Tekrar deneyebilir ya da aşağıdaki sonuçlara bakabilirsin.' } : { durduruldu: true };
+      }
       throw new Error(hataMetni(h));
     } finally {
+      clearTimeout(sure);
       this.aramaAkisi = null;
     }
     if (son.stop_reason === 'refusal') return { reddedildi: true };
@@ -197,16 +228,21 @@ class Asistan {
       parcalar.splice(0, parcalar.length, { metin: govde.trimEnd(), kaynaklar: [] });
     }
     const sonuc = { parcalar, kaynaklar, sonuclar, sinirda: son.stop_reason === 'max_tokens' };
-    this.aramaOnbellegi.set(sorgu, sonuc);
+    this.aramaOnbellegi.set(anahtar, sonuc);
     if (this.aramaOnbellegi.size > ARAMA_ONBELLEK_SINIRI) this.aramaOnbellegi.delete(this.aramaOnbellegi.keys().next().value);
     return sonuc;
   }
 
-  _anahtariOku() {
+  async _anahtariYukle() {
+    if (!this.dosyaVar) return;
     try {
-      return safeStorage.decryptString(fs.readFileSync(this.dosya));
+      const { result, shouldReEncrypt } = await safeStorage.decryptStringAsync(fs.readFileSync(this.dosya));
+      if (!result) return;
+      this.istemci = new Anthropic({ apiKey: result });
+      // Windows şifreleme anahtarı yenilendiyse kayıt yeni anahtarla yeniden şifrelenir
+      if (shouldReEncrypt) fs.writeFileSync(this.dosya, await safeStorage.encryptStringAsync(result));
     } catch {
-      return '';
+      // Çözülemeyen anahtar (ör. başka bir bilgisayardan kopyalanmış) yok sayılır; kullanıcı yeniden girer
     }
   }
 }

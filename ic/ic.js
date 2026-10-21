@@ -264,8 +264,12 @@ async function ayarlarCiz() {
       ayarSatiri('Gizli ve Tor sekmelerinde arama',
         'Bu sekmelerdeki aramalar gizlilik için Umbra AI\'ya gönderilmez; hesap gerektirmeyen, izleyicisiz bu motor kullanılır.', ozelMotor),
       ayarSatiri('Ana sayfa', 'Yeni sekmede ve ⌂ düğmesinde açılan sayfa.', el('div.dugmeler', {}, ana, anaKaydet)),
-      ayarSatiri('Açılışta sekmeleri geri yükle', 'Umbra kapanırken açık olan normal sekmeler bir sonraki açılışta geri gelir.',
-        anahtarDugme(ayarlar.oturumuGeriYukle, (v) => kaydet('oturumuGeriYukle', v))),
+      ayarSatiri('Açılışta', 'Umbra açıldığında ne gösterilsin?', (() => {
+        const s = el('select', { onchange: () => kaydet('acilis', s.value) },
+          el('option', { value: 'yeni-sekme', selected: ayarlar.acilis !== 'devam' }, 'Yeni sekme sayfası'),
+          el('option', { value: 'devam', selected: ayarlar.acilis === 'devam' }, 'Kaldığım yerden devam et'));
+        return s;
+      })()),
     ),
 
     el('h2', {}, 'Gizlilik ve güvenlik'),
@@ -390,23 +394,92 @@ async function yeniSekmeCiz() {
   girdi.focus();
 }
 
+// Google'daki gibi arama türü sekmeleri. Umbra'nın kendi web dizini olmadığı için her tür, o alanda en iyi
+// sonucu veren servisi açar; "AI Modu" bu sayfadır, "Araçlar" AI aramasına zaman filtresi uygular.
+const ZAMAN_ADLARI = { '': 'Her zaman', gun: 'Son 24 saat', hafta: 'Son 1 hafta', ay: 'Son 1 ay', yil: 'Son 1 yıl' };
+
+function dikeySekmeler(q, zaman, yedekMotor) {
+  const k = encodeURIComponent(q);
+  const ac = (url) => (e) => { e.preventDefault(); ic.eylem('ac', url, e.ctrlKey || e.button === 1); };
+  const sekme = (ad, url, aktif) => el('a.dikey' + (aktif ? '.aktif' : ''), {
+    href: '#', title: url || '', onclick: url ? ac(url) : (e) => e.preventDefault(), onauxclick: url ? ac(url) : null,
+  }, ad);
+  const acilir = (ad, ogeler, sag) => {
+    const liste = el('div.acilir-liste' + (sag ? '.sag' : ''), { hidden: true }, ogeler);
+    const dugme = el('a.dikey', { href: '#', onclick: (e) => { e.preventDefault(); e.stopPropagation(); liste.hidden = !liste.hidden; } }, ad + ' ▾');
+    document.addEventListener('click', () => { liste.hidden = true; });
+    return el('span.acilir', {}, dugme, liste);
+  };
+  const oge = (ad, url, secili) => el('a.acilir-oge' + (secili ? '.secili' : ''), { href: '#', onclick: ac(url) }, ad);
+  return el('nav.dikeyler', {},
+    sekme('✨ AI Modu', null, true),
+    sekme('Tümü', yedekMotor.ara + k),
+    sekme('Görseller', 'https://search.brave.com/images?q=' + k),
+    sekme('Videolar', 'https://search.brave.com/videos?q=' + k),
+    sekme('Kısa videolar', 'https://www.youtube.com/results?search_query=' + encodeURIComponent(q + ' #shorts')),
+    sekme('Alışveriş', 'https://www.google.com/search?udm=28&q=' + k),
+    sekme('Haberler', 'https://search.brave.com/news?q=' + k),
+    sekme('Yerler', 'https://www.google.com/maps/search/' + k),
+    acilir('Daha fazla', [
+      oge('Kitaplar', 'https://www.google.com/search?udm=36&q=' + k),
+      oge('Akademik', 'https://scholar.google.com/scholar?q=' + k),
+      oge('Uçuşlar', 'https://www.google.com/travel/flights?q=' + k),
+      oge('Finans', 'https://www.google.com/finance?q=' + k),
+      oge('Çeviri', 'https://translate.google.com/?sl=auto&tl=tr&text=' + k),
+      oge('Vikipedi', 'https://tr.wikipedia.org/w/index.php?search=' + k),
+    ]),
+    el('span.bosluk'),
+    acilir(zaman ? ZAMAN_ADLARI[zaman] : 'Araçlar', Object.entries(ZAMAN_ADLARI).map(([z, ad]) =>
+      oge(ad, 'umbra://ara?' + new URLSearchParams({ q, ...(z ? { zaman: z } : {}) }), z === zaman)), true),
+  );
+}
+
 async function aramaCiz(q) {
   document.title = `${q} - Umbra Arama`;
   const { form } = aramaKutusu(q, false, 'Umbra ile ara veya bir soru sor');
   const yanit = el('div.yanit-metni.yaziyor');
   const kaynakAlani = el('div.kaynaklar');
-  const durum = el('div.yanit-durum', {}, el('span.nokta'), 'Web\'de aranıyor…');
+  const durumYazi = el('span', {}, '🔍 Web\'de aranıyor…');
+  const durumSure = el('span.sure');
+  const durum = el('div.yanit-durum', {}, el('span.nokta'), durumYazi, durumSure);
   const yanitKarti = el('section.yanit-karti', {}, el('div.yanit-baslik', {}, '✨ Umbra yanıtı'), durum, yanit, kaynakAlani);
   const sonucAlani = el('section.sonuclar');
   const { yedekMotor } = await ic.veri('ara');
   const yedekAdres = yedekMotor.ara + encodeURIComponent(q);
+  const zaman = new URLSearchParams(location.search).get('zaman') || '';
   icerik.replaceChildren(el('div.arama-sayfasi', {},
     el('header.arama-ust', {}, el('a.mini-logo', { href: '#', title: 'Umbra Arama', onclick: (e) => { e.preventDefault(); ic.eylem('ac', 'umbra://ara'); } },
       el('img', { src: 'logo.png', alt: '' })), form),
+    dikeySekmeler(q, zaman, yedekMotor),
     yanitKarti,
     sonucAlani,
     el('p.alt-bilgi', {}, 'Aradığını bulamadın mı? ', baglanti(yedekAdres, `Bu aramayı ${yedekMotor.ad} ile aç`)),
   ));
+
+  // Web sonuçları, Claude aramayı yapar yapmaz gösterilir (AI yanıtı beklenmez); tekrar edenler atlanır
+  const gosterilen = new Set();
+  const sonuclariEkle = (liste) => {
+    const yeni = liste.filter((r) => r.url && !gosterilen.has(r.url));
+    if (!yeni.length) return;
+    if (!gosterilen.size) sonucAlani.append(el('h2', {}, 'Web sonuçları'));
+    for (const r of yeni) {
+      gosterilen.add(r.url);
+      sonucAlani.append(el('div.sonuc', {},
+        el('div.sonuc-adres', {}, host(r.url).replace(/^www\./, '') + (r.yas ? ' · ' + r.yas : '')),
+        el('div.sonuc-baslik', {}, baglanti(r.url, r.baslik))));
+    }
+  };
+
+  // Aşama ve geçen süre: kullanıcı beklerken neyin olduğunu görür
+  const baslangic = Date.now();
+  const sayac = setInterval(() => { durumSure.textContent = ` · ${Math.round((Date.now() - baslangic) / 1000)} sn`; }, 1000);
+  aktifDurumDinleyici = (d) => {
+    if (d.asama === 'aranıyor' && !gosterilen.size) durumYazi.textContent = '🔍 Web\'de aranıyor…';
+    else if (d.asama === 'sonuclar') {
+      sonuclariEkle(d.sonuclar || []);
+      durumYazi.textContent = `📄 ${gosterilen.size} sonuç bulundu, okunuyor…`;
+    } else if (d.asama === 'yaziyor') durumYazi.textContent = '✍ Yanıt yazılıyor…';
+  };
 
   let akan = '';
   aktifParcaDinleyici = (parca) => {
@@ -415,10 +488,13 @@ async function aramaCiz(q) {
     // Akış sırasında sondaki ham "KAYNAKLAR" listesi gösterilmez; bitince düzenli kaynak listesine dönüşür
     yanit.innerHTML = markdown(akan.split(/\n\s*\**KAYNAKLAR/i)[0]);
   };
-  const sonuc = await ic.eylem('ara', q);
+  const sonuc = await ic.eylem('ara', q, zaman);
   aktifParcaDinleyici = null;
+  aktifDurumDinleyici = null;
+  clearInterval(sayac);
   yanit.classList.remove('yaziyor');
   durum.hidden = true;
+  if (Array.isArray(sonuc.sonuclar)) sonuclariEkle(sonuc.sonuclar);
 
   if (sonuc.hata || sonuc.reddedildi || sonuc.durduruldu) {
     yanitKarti.classList.add('hata');
@@ -444,15 +520,12 @@ async function aramaCiz(q) {
     }, el('b', {}, String(i + 1)), el('span', {}, host(k.url).replace(/^www\./, '')))));
   }
   if (sonuc.onbellekten) durum.replaceWith(el('div.yanit-durum', {}, 'Önbellekten gösteriliyor'));
-  if (sonuc.sonuclar.length) {
-    sonucAlani.append(el('h2', {}, 'Web sonuçları'), ...sonuc.sonuclar.map((r) => el('div.sonuc', {},
-      el('div.sonuc-adres', {}, host(r.url).replace(/^www\./, '') + (r.yas ? ' · ' + r.yas : '')),
-      el('div.sonuc-baslik', {}, baglanti(r.url, r.baslik)))));
-  }
 }
 
 let aktifParcaDinleyici = null;
+let aktifDurumDinleyici = null;
 ic.parcaDinle((parca) => aktifParcaDinleyici?.(parca));
+ic.aramaDurumuDinle((d) => aktifDurumDinleyici?.(d));
 // Arama sürerken sayfadan çıkılırsa istek iptal edilir (boşuna ücretlendirilmesin)
 window.addEventListener('pagehide', () => { if (aktifParcaDinleyici) ic.eylem('ara-durdur'); });
 

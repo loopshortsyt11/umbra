@@ -21,7 +21,7 @@ const VARSAYILAN_AYARLAR = {
   aramaMotoru: 'umbra',
   ozelAramaMotoru: 'brave',  // gizli ve Tor sekmelerinde
   anaSayfa: '',              // boşsa Umbra'nın yeni sekme sayfası
-  oturumuGeriYukle: true,
+  acilis: 'yeni-sekme',      // Chrome'daki gibi: 'yeni-sekme' ya da 'devam' (kaldığın yerden devam et)
   izleyiciEngelle: true,
   turboIndir: true,          // normal sekmelerdeki indirmeleri TurboIndir'e devret (gizli/Tor'da asla)
 };
@@ -95,6 +95,7 @@ class Veri {
     if (!(anahtar in VARSAYILAN_AYARLAR) || typeof deger !== typeof VARSAYILAN_AYARLAR[anahtar]) return false;
     if (anahtar === 'aramaMotoru' && !ARAMA_MOTORLARI[deger]) return false;
     if (anahtar === 'ozelAramaMotoru' && !OZEL_MOTORLAR.includes(deger)) return false;
+    if (anahtar === 'acilis' && !['yeni-sekme', 'devam'].includes(deger)) return false;
     if (anahtar === 'anaSayfa' && deger && !/^https?:\/\//i.test(deger)) return false;
     this.ayarlar[anahtar] = deger;
     this.ayarDeposu.kaydet();

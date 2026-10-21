@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('ic', {
   eylem: (eylem, ...arg) => ipcRenderer.invoke('ic:eylem', String(eylem), ...arg),
   degisinceDinle: (cb) => ipcRenderer.on('ic:degisti', (_e, sayfa) => cb(sayfa)),
   parcaDinle: (cb) => ipcRenderer.on('ic:parca', (_e, parca) => cb(String(parca))),
+  aramaDurumuDinle: (cb) => ipcRenderer.on('ic:arama-durum', (_e, durum) => cb(durum)),
 });

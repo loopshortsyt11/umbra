@@ -43,12 +43,27 @@ app.commandLine.appendSwitch('site-per-process');
 // Otomatik derleme hattının duman testi: arayüz ve ilk sekme sorunsuz yüklenirse 0, aksi halde 1 ile çıkar
 const DUMAN_TESTI = process.argv.includes('--duman-testi');
 const ARAYUZ_TESTI = !app.isPackaged && process.argv.includes('--arayuz-testi'); // yalnızca geliştirme sürümünde
-if (ARAYUZ_TESTI) app.setPath('userData', path.join(app.getPath('temp'), `umbra-arayuz-testi-${process.pid}`));
+if (ARAYUZ_TESTI) {
+  app.setPath('userData', path.join(app.getPath('temp'), `umbra-arayuz-testi-${process.pid}`));
+  // Ücretli AI arama testi için: verilen klasördeki şifreli anahtar (ve onu açan Local State) test klasörüne kopyalanır
+  const anahtarKlasoru = process.env.UMBRA_TEST_ANAHTAR_KLASORU;
+  if (anahtarKlasoru) {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    for (const ad of ['Local State', 'ai-anahtar.bin']) fs.copyFileSync(path.join(anahtarKlasoru, ad), path.join(app.getPath('userData'), ad));
+  }
+}
 if (DUMAN_TESTI) {
   // Kullanıcının verilerine dokunmamak ve açık bir Umbra'yla çakışmamak için geçici veri klasörü
   app.setPath('userData', path.join(app.getPath('temp'), `umbra-duman-${process.pid}`));
   process.on('uncaughtException', (h) => { console.error('DUMAN TESTİ HATASI', h); app.exit(1); });
   setTimeout(() => { console.error('DUMAN TESTİ: zaman aşımı'); app.exit(1); }, 60000);
+}
+
+// Beklenmedik bir hata tarayıcıyı kilitlemesin: Electron'un varsayılan hata penceresi yerine kaydedilip devam edilir
+// (duman testi kendi işleyicisiyle çıkış koduna çevirir)
+if (!DUMAN_TESTI) {
+  process.on('uncaughtException', (h) => console.error('Beklenmedik hata', h));
+  process.on('unhandledRejection', (h) => console.error('Yakalanmamış söz hatası', h));
 }
 
 // Tarayıcının eski adı "Kalkan" idi: o adla kaydedilmiş veriler (geçmiş, çerezler, AI anahtarı) bir kez yeni klasöre taşınır
@@ -118,8 +133,17 @@ function icSorgu(url) {
   return m ? (new URLSearchParams(m[1]).get('q') || '').trim().slice(0, 500) : '';
 }
 
-function icYukle(wc, sayfa, sorgu) {
-  wc.loadFile(path.join(__dirname, 'ic', 'index.html'), { hash: sayfa, ...(sorgu ? { query: { q: sorgu } } : {}) });
+// umbra://ara?q=...&zaman=hafta adresindeki zaman filtresi (Araçlar menüsü)
+const ZAMANLAR = ['gun', 'hafta', 'ay', 'yil'];
+function icZaman(url) {
+  const m = /\?(.*)$/.exec(String(url || '').trim());
+  const z = m ? new URLSearchParams(m[1]).get('zaman') : '';
+  return ZAMANLAR.includes(z) ? z : '';
+}
+
+function icYukle(wc, sayfa, sorgu, zaman) {
+  const query = { ...(sorgu ? { q: sorgu } : {}), ...(sorgu && zaman ? { zaman } : {}) };
+  wc.loadFile(path.join(__dirname, 'ic', 'index.html'), { hash: sayfa, ...(sorgu ? { query } : {}) });
 }
 
 function kokeni(url) {
@@ -497,7 +521,10 @@ function aktifWc() {
 }
 
 function sekmeAdresi(s) {
-  if (s.tur === 'ic') return `umbra://${s.icSayfa}${s.icSorgu ? '?' + new URLSearchParams({ q: s.icSorgu }) : ''}`;
+  if (s.tur === 'ic') {
+    const p = s.icSorgu ? new URLSearchParams({ q: s.icSorgu, ...(s.icZaman ? { zaman: s.icZaman } : {}) }) : null;
+    return `umbra://${s.icSayfa}${p ? '?' + p : ''}`;
+  }
   if (s.torBekliyor) return '';
   const gercek = s.view.webContents.getURL();
   if (gercek.startsWith('file:')) return ''; // gizli/Tor başlangıç sayfasında adres çubuğu boş kalır
@@ -567,7 +594,7 @@ function arayuzuGuncelle() {
   guncellemeZamanlayici = setTimeout(() => {
     guncellemeZamanlayici = null;
     if (!arayuz || arayuz.webContents.isDestroyed()) return;
-    const liste = [...sekmeler.values()].map((s) => {
+    const liste = [...sekmeler.values()].filter((s) => !s.view.webContents.isDestroyed()).map((s) => {
       const wc = s.view.webContents;
       const url = sekmeAdresi(s);
       const hatada = Boolean(s.hataAdresi && wc.getURL().startsWith('data:'));
@@ -581,8 +608,8 @@ function arayuzuGuncelle() {
         url,
         favicon: s.tur === 'ic' ? 'logo-kucuk.png' : s.favicon || '',
         yukleniyor: s.torBekliyor || wc.isLoading(),
-        geri: wc.navigationHistory.canGoBack(),
-        ileri: wc.navigationHistory.canGoForward(),
+        geri: wc.navigationHistory.canGoBack() || Boolean(s.onceki),
+        ileri: wc.navigationHistory.canGoForward() || Boolean(s.sonraki),
         tur: s.tur,
         guvenli: !hatada && url.startsWith('https://'),
         engellenen: engellenen.get(wc.id) || 0,
@@ -594,6 +621,9 @@ function arayuzuGuncelle() {
     const iniyor = tumIndirmeler().filter((i) => i.durum === 'iniyor');
     const toplam = iniyor.reduce((t, i) => t + (i.boyut || 0), 0);
     const alinan = iniyor.reduce((t, i) => t + (i.alinan || 0), 0);
+    // Başlık çubuğu görünmez ama görev çubuğunda ve Alt+Tab'da etkin sekmenin başlığı görünür (Chrome'daki gibi)
+    const etkin = liste.find((x) => x.aktif);
+    if (pencere && etkin) pencere.setTitle(`${etkin.baslik} - Umbra`);
     arayuz.webContents.send('tabs:update', {
       sekmeler: liste,
       aiAcik: panelAcik,
@@ -653,7 +683,7 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
       },
   });
   view.setBackgroundColor(tur === 'ic' ? '#1f2228' : '#ffffff');
-  const sekme = { id, view, tur, icSayfa: ic, icSorgu: ic ? icSorgu(url) : '', istenenAdres: url, favicon: '', hataAdresi: null, torBekliyor: false, bekleyenAdres: null };
+  const sekme = { id, view, tur, icSayfa: ic, icSorgu: ic ? icSorgu(url) : '', icZaman: ic ? icZaman(url) : '', istenenAdres: url, favicon: '', hataAdresi: null, torBekliyor: false, bekleyenAdres: null };
   sekmeler.set(id, sekme);
   if (konum !== null) sirayaKoy(id, konum);
   const wc = view.webContents;
@@ -680,6 +710,13 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
     }
   });
   const gezindi = (adres) => {
+    // Geri dönülmüş bir sayfadan yeni bir yere gidilince (geçmişin sonunda yeni kayıt) saklı "ileri" sayfası silinir.
+    // Yalnızca görünen sekmede: arkada saklanan bir sayfa kendi adresini güncellerse (ör. pushState) bu bir gezinme sayılmaz.
+    if (sekme.sonraki && !sekme.gecmisGezinme && sekmeler.get(sekme.id) === sekme) {
+      const g = wc.navigationHistory;
+      if (g.getActiveIndex() === g.length() - 1) zinciriKapat(sekme, 'sonraki');
+    }
+    sekme.gecmisGezinme = false;
     // Gizli ve Tor sekmelerinde geçmiş tutulmaz
     if (tur === 'normal' && webAdresiMi(adres)) veri.gecmiseEkle(adres, wc.getTitle());
     oturumuKaydet();
@@ -732,7 +769,7 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
   if (tur !== 'ic') wc.on('context-menu', (_e, p) => sagTikMenusu(wc, p, tur));
 
   if (tur === 'ic') {
-    icYukle(wc, ic, sekme.icSorgu);
+    icYukle(wc, ic, sekme.icSorgu, sekme.icZaman);
   } else if (tur === 'tor') {
     sekme.torBekliyor = true;
     sekme.bekleyenAdres = url;
@@ -780,20 +817,77 @@ function git(s, url) {
   const ic = icSayfa(url);
   if (!ic && !webAdresiMi(url)) return;
   if (s.torBekliyor) { s.bekleyenAdres = url; return; } // Tor bağlanınca bu adres açılır
+  zinciriKapat(s, 'sonraki'); // yeni bir gezinme, "ileri" geçmişini siler (Chrome'daki gibi)
   if (s.tur === 'ic' && ic) {
     s.icSayfa = ic;
     s.icSorgu = icSorgu(url);
-    icYukle(s.view.webContents, ic, s.icSorgu);
+    s.icZaman = icZaman(url);
+    icYukle(s.view.webContents, ic, s.icSorgu, s.icZaman);
     oturumuKaydet();
     return arayuzuGuncelle();
   }
   if ((s.tur === 'ic') !== Boolean(ic)) {
+    // Umbra sayfası ile web sayfası ayrı görünümlerde çalışır: yeni görünüm aynı yere konur, eskisi kapatılmaz,
+    // "geri" için arkada saklanır (sesi kısılır). Böylece geri/ileri iki sayfa arasında da çalışır.
     const konum = [...sekmeler.keys()].indexOf(s.id);
-    sekmeAc(url, s.tur === 'ic' ? 'normal' : s.tur, { konum });
-    return sekmeKapat(s.id, { kayitsiz: true });
+    const yeni = sekmeler.get(sekmeAc(url, s.tur === 'ic' ? 'normal' : s.tur, { konum, arkaPlanda: aktifId !== s.id }));
+    sekmeyiSakla(s);
+    yeni.onceki = s;
+    s.sonraki = yeni;
+    // Saklanan sayfa zinciri en fazla 4 adım geriye gider; daha eskileri kapatılır
+    let x = yeni;
+    for (let adim = 0; x.onceki; adim++, x = x.onceki) if (adim >= 3) { zinciriKapat(x, 'onceki'); break; }
+    arayuzuGuncelle();
+    return oturumuKaydet();
   }
   s.view.webContents.loadURL(url);
   s.view.webContents.focus();
+}
+
+// Görünür bir sekmeyi listeden ve ekrandan çıkarır ama kapatmaz (geri/ileri zincirinde saklanır)
+function sekmeyiSakla(s) {
+  if (aktifId === s.id) { pencere.contentView.removeChildView(s.view); aktifId = null; }
+  sekmeler.delete(s.id);
+  s.view.webContents.setAudioMuted(true);
+}
+
+// Görünür sekme s'nin yerine zincirdeki saklı sekme h'yi koyar
+function yerineKoy(s, h) {
+  const konum = [...sekmeler.keys()].indexOf(s.id);
+  const aktifti = aktifId === s.id;
+  sekmeyiSakla(s);
+  sekmeler.set(h.id, h);
+  sirayaKoy(h.id, konum);
+  h.view.webContents.setAudioMuted(false);
+  if (aktifti) sekmeyeGec(h.id);
+  else arayuzuGuncelle();
+  oturumuKaydet();
+}
+
+// Bir yöndeki (onceki/sonraki) saklı sekmelerin hepsini kapatır
+function zinciriKapat(s, yon) {
+  let x = s[yon];
+  s[yon] = null;
+  // Zincir hiçbir zaman ekranda görünen bir sekmeye ulaşıp onu kapatmamalı
+  while (x && sekmeler.get(x.id) !== x) {
+    const devam = x[yon];
+    engellenen.delete(x.view.webContents.id);
+    turbo.temizle(x.view.webContents.id);
+    if (!x.view.webContents.isDestroyed()) x.view.webContents.close();
+    x = devam;
+  }
+}
+
+function geriGit(s) {
+  if (!s) return;
+  const g = s.view.webContents.navigationHistory;
+  if (g.canGoBack()) { s.gecmisGezinme = true; g.goBack(); } else if (s.onceki) yerineKoy(s, s.onceki);
+}
+
+function ileriGit(s) {
+  if (!s) return;
+  const g = s.view.webContents.navigationHistory;
+  if (g.canGoForward()) { s.gecmisGezinme = true; g.goForward(); } else if (s.sonraki) yerineKoy(s, s.sonraki);
 }
 
 function sagTikMenusu(wc, p, tur) {
@@ -829,8 +923,13 @@ function sagTikMenusu(wc, p, tur) {
   const turboOgeleri = turboMenuOgeleri([...sekmeler.values()].find((x) => x.view.webContents === wc), p);
   if (turboOgeleri.length) ogeler.push(...turboOgeleri, { type: 'separator' });
   ogeler.push(
-    { label: 'Geri', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
-    { label: 'İleri', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
+    ...(() => {
+      const s = [...sekmeler.values()].find((x) => x.view.webContents === wc);
+      return [
+        { label: 'Geri', enabled: wc.navigationHistory.canGoBack() || Boolean(s?.onceki), click: () => geriGit(s) },
+        { label: 'İleri', enabled: wc.navigationHistory.canGoForward() || Boolean(s?.sonraki), click: () => ileriGit(s) },
+      ];
+    })(),
     { label: 'Yenile', click: () => wc.reload() },
     { type: 'separator' },
     { label: 'Sayfayı farklı kaydet', click: () => sayfayiKaydet(wc) },
@@ -878,6 +977,8 @@ function sekmeKapat(id, { kayitsiz = false } = {}) {
   }
   if (aktifId === id) pencere.contentView.removeChildView(s.view);
   sekmeler.delete(id);
+  zinciriKapat(s, 'onceki');
+  zinciriKapat(s, 'sonraki');
   engellenen.delete(s.view.webContents.id);
   turbo.temizle(s.view.webContents.id);
   s.view.webContents.close();
@@ -970,8 +1071,8 @@ function menuyuKur() {
         { label: 'Yenile', accelerator: 'F5', click: () => aktifWc()?.reload() },
         { label: 'Yenile ', accelerator: 'CmdOrCtrl+R', click: () => aktifWc()?.reload() },
         { label: 'Önbelleksiz yenile', accelerator: 'CmdOrCtrl+Shift+R', click: () => aktifWc()?.reloadIgnoringCache() },
-        { label: 'Geri', accelerator: 'Alt+Left', click: () => aktifWc()?.navigationHistory.goBack() },
-        { label: 'İleri', accelerator: 'Alt+Right', click: () => aktifWc()?.navigationHistory.goForward() },
+        { label: 'Geri', accelerator: 'Alt+Left', click: () => geriGit(aktifSekme()) },
+        { label: 'İleri', accelerator: 'Alt+Right', click: () => ileriGit(aktifSekme()) },
         { label: 'Yakınlaştır ', accelerator: 'CmdOrCtrl+Plus', click: () => zoom(0.5) },
         { label: 'Geliştirici araçları', accelerator: 'F12', click: () => aktifWc()?.toggleDevTools() },
         { label: 'Tam ekran', accelerator: 'F11', click: () => pencere.setFullScreen(!pencere.isFullScreen()) },
@@ -1069,7 +1170,8 @@ async function icEylem(e, eylem, ...arg) {
     case 'ara': {
       // Yanıt metni akarken sayfaya parça parça gönderilir; sayfa kapanırsa parçalar sessizce atılır
       const gonder = (parca) => { if (!e.sender.isDestroyed()) e.sender.send('ic:parca', parca); };
-      return asistan.ara(String(arg[0] || ''), gonder);
+      const durum = (d) => { if (!e.sender.isDestroyed()) e.sender.send('ic:arama-durum', d); };
+      return asistan.ara(String(arg[0] || ''), gonder, durum, ZAMANLAR.includes(arg[1]) ? arg[1] : '');
     }
     case 'ara-durdur': asistan.aramayiDurdur(); return;
     case 'ara-motor': return { tamam: veri.ayarla('aramaMotoru', 'umbra') };
@@ -1115,8 +1217,8 @@ function ipcKur() {
   dinle('tab:close', (id) => sekmeKapat(Number(id)));
   dinle('tab:switch', (id) => sekmeyeGec(Number(id)));
   dinle('nav:go', (girdi) => git(aktifSekme(), adreseCevir(girdi, aktifSekme()?.tur)));
-  dinle('nav:back', () => aktifWc()?.navigationHistory.goBack());
-  dinle('nav:forward', () => aktifWc()?.navigationHistory.goForward());
+  dinle('nav:back', () => geriGit(aktifSekme()));
+  dinle('nav:forward', () => ileriGit(aktifSekme()));
   dinle('nav:reload', () => aktifWc()?.reload());
   dinle('nav:stop', () => aktifWc()?.stop());
   dinle('nav:home', () => git(aktifSekme(), veri.anaSayfa(aktifSekme()?.tur)));
@@ -1278,8 +1380,12 @@ app.whenReady().then(() => {
     title: 'Umbra',
     icon: SIMGE,
     backgroundColor: '#1f2228',
-    autoHideMenuBar: true,
+    // Chrome gibi: başlık çubuğu yok, sekmeler en üstte; küçült/büyüt/kapat düğmeleri sekme satırının sağında
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#1f2228', symbolColor: '#e6e8ec', height: 38 },
   });
+  // Uygulama menüsü yalnızca klavye kısayolları içindir; Alt'a basınca da görünmez
+  pencere.setMenuBarVisibility(false);
   arayuz = new WebContentsView({
     webPreferences: {
       preload: path.join(__dirname, 'arayuz', 'preload.js'),
@@ -1334,7 +1440,7 @@ app.whenReady().then(() => {
       sekmeler, aktifSekme, veri, sekmeAc, sekmeAdresi, tumIndirmeler, anaMenuOgeleri,
     }), 1500));
   }
-  const onceki = veri.ayarlar.oturumuGeriYukle ? veri.oturum.filter((u) => webAdresiMi(u) || icSayfa(u)) : [];
+  const onceki = veri.ayarlar.acilis === 'devam' ? veri.oturum.filter((u) => webAdresiMi(u) || icSayfa(u)) : [];
   if (onceki.length) {
     onceki.forEach((u, i) => sekmeAc(u, 'normal', { arkaPlanda: i > 0 }));
   } else {

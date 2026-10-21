@@ -61,15 +61,39 @@ module.exports = async function arayuzTesti(u) {
   }
 
   const filtre = process.env.UMBRA_TEST_FILTRE;
-  async function test(ad, fn) {
-    if (filtre && !ad.includes(filtre)) return;
+  // Bir söz, en fazla ms kadar beklenir (kapanmış bir sayfaya yapılan çağrılar hiç dönmeyebilir)
+  const sinirla = (soz, ms, aciklama) => Promise.race([soz, bekle(ms).then(() => { throw new Error(aciklama + " " + ms + " ms içinde bitmedi"); })]);
+
+  // Hata anında sekmelerin ve sekme çubuğunun durumunu yazdırır (UMBRA_TEST_TANI=1 ile)
+  async function tani(ad) {
     try {
-      await fn();
-      sonuclar.push({ durum: 'GEÇTİ', ad });
-    } catch (h) {
-      sonuclar.push({ durum: 'KALDI', ad, hata: h.message });
+      const sekmeler = [...u.sekmeler.values()].map((x) => `${x.id}:${x.tur}:${u.sekmeAdresi(x).slice(0, 40)}`
+        + (x.onceki ? "<" + x.onceki.id : "") + (x.sonraki ? ">" + x.sonraki.id : ""));
+      const dom = await sinirla(ui().executeJavaScript("[...document.querySelectorAll('#sekme-listesi .sekme')].map((e) => e.className + '|' + e.textContent.slice(0, 25))"), 3000, "sekme çubuğu");
+      console.log("TANI", ad, JSON.stringify({ aktif: u.aktifSekme()?.id ?? null, sekmeler, dom }));
+      const g = u.aktifSekme()?.view.webContents;
+      if (g && !g.isDestroyed()) fs.writeFileSync(path.join(app.getPath("temp"), "umbra-tani-" + sonuclar.length + ".png"), (await sinirla(g.capturePage(), 3000, "görüntü")).toPNG());
+    } catch (x) {
+      console.log("TANI-HATA", ad, x.message);
     }
   }
+
+  // anahtarsiz: AI anahtarının olmadığı durumu sınayan test; UMBRA_TEST_ANAHTAR_KLASORU verilmişse atlanır
+  async function test(ad, fn, { anahtarsiz = false } = {}) {
+    if (filtre && !new RegExp(filtre).test(ad)) return;
+    if (anahtarsiz && process.env.UMBRA_TEST_ANAHTAR_KLASORU) { sonuclar.push({ durum: "ATLANDI", ad }); return; }
+    const t0 = Date.now();
+    try {
+      await sinirla(fn(), 180000, "test");
+      sonuclar.push({ durum: "GEÇTİ", ad });
+      console.log(`✓ ${ad} (${Math.round((Date.now() - t0) / 1000)} sn)`);
+    } catch (h) {
+      if (process.env.UMBRA_TEST_TANI) await tani(ad);
+      sonuclar.push({ durum: "KALDI", ad, hata: h.message });
+      console.log(`✗ ${ad}  →  ${h.message}`);
+    }
+  }
+
 
   const adresBekle = (parca, ms) => kosul(() => u.sekmeAdresi(u.aktifSekme()).includes(parca), ms, `adres "${parca}"`);
 
@@ -235,12 +259,12 @@ module.exports = async function arayuzTesti(u) {
   });
 
   await test('Ayarlar sayfasındaki anahtar düğmesi ayarı değiştirir', async () => {
-    const once = u.veri.ayarlar.oturumuGeriYukle;
+    const once = u.veri.ayarlar.izleyiciEngelle;
     await kosul(async () => (await konum('.anahtar span', aktifWc())) !== null, 3000, 'anahtarın çizilmesi');
     await tikla('.anahtar span', { wc: aktifWc() });
-    await kosul(() => u.veri.ayarlar.oturumuGeriYukle === !once, 3000, 'ayarın değişmesi');
+    await kosul(() => u.veri.ayarlar.izleyiciEngelle === !once, 3000, 'ayarın değişmesi');
     await tikla('.anahtar span', { wc: aktifWc() });
-    await kosul(() => u.veri.ayarlar.oturumuGeriYukle === once, 3000, 'ayarın geri dönmesi');
+    await kosul(() => u.veri.ayarlar.izleyiciEngelle === once, 3000, 'ayarın geri dönmesi');
   });
 
   await test('İndirme sırasında İptal düğmesi çalışır', async () => {
@@ -331,7 +355,7 @@ module.exports = async function arayuzTesti(u) {
     await kosul(async () => !pw.isLoading() && !(await pw.executeJavaScript('document.getElementById("kurulum").hidden')), 5000, 'yeni sohbet sonrası panel');
     await tikla('#kapat', { wc: pw });
     await kosul(() => !u.panelAcik, 3000, 'panelin kapanması');
-  });
+  }, { anahtarsiz: true });
 
   // --- Gizli/Tor başlangıç sayfası ve arama motorları ---
   await test('Gizli sekme Umbra başlangıç sayfasıyla açılır, araması seçili motora gider', async () => {
@@ -357,12 +381,12 @@ module.exports = async function arayuzTesti(u) {
     await tikla('#yeni-sekme');
     await yazEnter('#adres', 'umbra tarayici deneme');
     await kosul(() => u.sekmeAdresi(u.aktifSekme()).startsWith('https://search.brave.com/search?q=umbra'), 15000, 'Brave Search sonucu');
-  });
+  }, { anahtarsiz: true });
 
   await test('Ayarlar: gizli/Tor arama motoru seçimi', async () => {
     await yazEnter('#adres', 'umbra://ayarlar');
     await adresBekle('umbra://ayarlar', 5000);
-    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll("select").length')) === 2, 3000, 'iki arama motoru seçimi');
+    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll("select").length')) >= 2, 8000, 'arama motoru seçimleri');
     await aktifWc().executeJavaScript(`(() => { const s = document.querySelectorAll('select')[1]; s.value = 'mojeek'; s.dispatchEvent(new Event('change')); })()`);
     await kosul(() => u.veri.ayarlar.ozelAramaMotoru === 'mojeek', 3000, 'ayarın kaydedilmesi');
     if (u.veri.aramaAdresi('x', 'gizli') !== 'https://www.mojeek.com/search?q=x') throw new Error('gizli arama Mojeek\'e gitmiyor');
@@ -457,6 +481,94 @@ module.exports = async function arayuzTesti(u) {
     if (u.veri.siteTahmini('merhaba') !== null) throw new Error('bilinmeyen kelime siteye çevrildi');
   });
 
+  // --- Geri/ileri: yeni sekme sayfası ile web sayfası arasında ---
+  await test('Yeni sekmeden siteye git; geri yeni sekme sayfasına, ileri siteye döner', async () => {
+    if (u.veri.ayarlar.acilis !== 'yeni-sekme') throw new Error('varsayılan açılış yeni sekme değil: ' + u.veri.ayarlar.acilis);
+    await tikla('#yeni-sekme');
+    await kosul(async () => !aktifWc().isLoading() && (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
+    const n = u.sekmeler.size;
+    await yazEnter('.arama-kutusu input', 'example.com', aktifWc());
+    await adresBekle('example.com', 15000);
+    if (u.sekmeler.size !== n) throw new Error('sekme sayısı değişti');
+    await kosul(async () => !(await ui().executeJavaScript('document.getElementById("geri").disabled')), 3000, 'geri düğmesinin etkin olması');
+    await tikla('#geri');
+    await adresBekle('umbra://ara', 5000);
+    await kosul(async () => (await konum('.arama-kutusu input', aktifWc())) !== null, 3000, 'yeni sekme sayfasının geri gelmesi');
+    await tikla('#ileri');
+    await adresBekle('example.com', 5000);
+    // Geri dönüp başka yere gidince "ileri" silinmeli
+    await tikla('#geri');
+    await adresBekle('umbra://ara', 5000);
+    await yazEnter('#adres', 'umbra://gecmis');
+    await adresBekle('umbra://gecmis', 5000);
+    await kosul(async () => (await ui().executeJavaScript('document.getElementById("ileri").disabled')), 3000, 'ileri geçmişinin silinmesi');
+  });
+
+  await test('Arama sayfası: Görseller/Videolar/... sekmeleri ve Araçlar zaman filtresi', async () => {
+    await tikla('#yeni-sekme');
+    await yazEnter('#adres', 'umbra://ara?q=kedi');
+    await kosul(async () => (await aktifWc().executeJavaScript('document.querySelectorAll(".dikeyler a.dikey").length')) >= 10, 8000, 'arama sekmeleri');
+    const adlar = await aktifWc().executeJavaScript('[...document.querySelectorAll(".dikeyler a.dikey")].map((a) => a.textContent)');
+    for (const ad of ['AI Modu', 'Tümü', 'Görseller', 'Videolar', 'Kısa videolar', 'Alışveriş', 'Haberler', 'Yerler', 'Daha fazla', 'Araçlar']) {
+      if (!adlar.some((x) => x.includes(ad))) throw new Error(`"${ad}" sekmesi yok: ` + adlar.join(', '));
+    }
+    await goruntuKaydet(aktifWc(), 'umbra-arama-sekmeleri.png');
+    const gorsel = await aktifWc().executeJavaScript('[...document.querySelectorAll(".dikeyler a.dikey")].findIndex((a) => a.textContent === "Görseller") + 1');
+    await tikla(`.dikeyler a.dikey:nth-of-type(${gorsel})`, { wc: aktifWc() });
+    await adresBekle('search.brave.com/images?q=kedi', 15000);
+    await tikla('#geri');
+    await adresBekle('umbra://ara?q=kedi', 5000);
+    // Araçlar → Son 1 hafta
+    await kosul(async () => (await konum('.dikeyler .acilir:last-child a.dikey', aktifWc())) !== null, 8000, 'Araçlar düğmesi');
+    await tikla('.dikeyler .acilir:last-child a.dikey', { wc: aktifWc() });
+    const hafta = await aktifWc().executeJavaScript('[...document.querySelectorAll(".dikeyler .acilir:last-child a.acilir-oge")].findIndex((a) => a.textContent === "Son 1 hafta") + 1');
+    await tikla(`.dikeyler .acilir:last-child a.acilir-oge:nth-of-type(${hafta})`, { wc: aktifWc() });
+    await adresBekle('zaman=hafta', 5000);
+  });
+
+  await test('Arkada saklanan sayfa adresini değiştirince görünen sekme kapanmaz', async () => {
+    // yeni sekme (A) → web (B, A arkada) → umbra://gecmis (C, B arkada); sonra B kendi adresini pushState ile değiştirir
+    await tikla('#yeni-sekme');
+    await kosul(async () => !aktifWc().isLoading() && (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
+    await yazEnter('.arama-kutusu input', 'example.com', aktifWc());
+    await adresBekle('example.com', 15000);
+    await kosul(() => !aktifWc().isLoading(), 15000, 'yükleme');
+    await yazEnter('#adres', 'umbra://gecmis');
+    await adresBekle('umbra://gecmis', 5000);
+    const gorunen = u.aktifSekme();
+    const sakli = gorunen.onceki;
+    if (!sakli) throw new Error('web sayfası arkada saklanmadı');
+    await sakli.view.webContents.executeJavaScript('history.pushState({}, "", "/arka-plan-degisikligi")');
+    await bekle(800);
+    if (u.aktifSekme() !== gorunen || gorunen.view.webContents.isDestroyed()) throw new Error('görünen sekme kapatıldı');
+    await tikla('#geri');
+    await kosul(() => u.sekmeAdresi(u.aktifSekme()).includes('example.com'), 5000, 'geri ile web sayfasına dönüş');
+  });
+
+  if (process.env.UMBRA_TEST_ANAHTAR_KLASORU) {
+    await test('Umbra Arama: web sonuçları yanıttan önce görünür, aşama ve süre ilerler (ücretli)', async () => {
+      await tikla('#yeni-sekme');
+      await yazEnter('#adres', 'umbra://ara?q=' + encodeURIComponent('istanbul yarın hava durumu'));
+      await kosul(async () => (await konum('.yanit-durum', aktifWc())) !== null, 5000, 'arama sayfası');
+      let onceSonuc = false, sureIlerledi = false, asamalar = new Set();
+      const bitis = Date.now() + 90000;
+      while (Date.now() < bitis) {
+        const d = await aktifWc().executeJavaScript(`({ sonuc: document.querySelectorAll('.sonuc').length,
+          yanit: (document.querySelector('.yanit-metni')?.innerText || '').trim().length,
+          durum: document.querySelector('.yanit-durum')?.innerText || '', gizli: document.querySelector('.yanit-durum')?.hidden })`);
+        if (d.sonuc > 0 && d.yanit === 0) onceSonuc = true;
+        if (/\d+ sn/.test(d.durum) && !/· 0 sn/.test(d.durum)) sureIlerledi = true;
+        if (d.durum) asamalar.add(d.durum.replace(/ · \d+ sn/, ''));
+        if (d.yanit > 40 && d.gizli && !(await aktifWc().executeJavaScript('document.querySelector(".yanit-metni").classList.contains("yaziyor")'))) break;
+        await bekle(400);
+      }
+      console.log('ARAMA ASAMALARI', JSON.stringify([...asamalar]));
+      if (!onceSonuc) throw new Error('web sonuçları yanıttan önce görünmedi');
+      if (!sureIlerledi) throw new Error('geçen süre gösterilmedi');
+      if (!(await aktifWc().executeJavaScript('document.querySelector(".yanit-metni").innerText.length > 40'))) throw new Error('yanıt gelmedi');
+    });
+  }
+
   // --- Google girişi ---
   await test('Google giriş sayfasında Chrome markası, başka sitede normal kimlik', async () => {
     await tikla('#yeni-sekme');
@@ -499,10 +611,18 @@ module.exports = async function arayuzTesti(u) {
     });
   }
 
+  // Görsel denetim için pencere açık bırakılabilir (UMBRA_TEST_BEKLE=milisaniye)
+  if (process.env.UMBRA_TEST_BEKLE) {
+    u.pencere.setAlwaysOnTop(true); // denetim sırasında başka pencereler örtmesin
+    u.pencere.focus();
+    await bekle(Number(process.env.UMBRA_TEST_BEKLE));
+  }
+
   // --- Rapor ---
   const kalan = sonuclar.filter((s) => s.durum === 'KALDI');
-  const rapor = sonuclar.map((s) => `${s.durum === 'GEÇTİ' ? '✓' : '✗'} ${s.ad}${s.hata ? '  →  ' + s.hata : ''}`).join('\n')
-    + `\n\n${sonuclar.length - kalan.length}/${sonuclar.length} test geçti`;
+  const atlanan = sonuclar.filter((s) => s.durum === 'ATLANDI').length;
+  const rapor = sonuclar.map((s) => `${{ 'GEÇTİ': '✓', KALDI: '✗', ATLANDI: '–' }[s.durum]} ${s.ad}${s.hata ? '  →  ' + s.hata : ''}`).join('\n')
+    + `\n\n${sonuclar.length - kalan.length - atlanan}/${sonuclar.length - atlanan} test geçti${atlanan ? ` (${atlanan} atlandı)` : ''}`;
   console.log(rapor);
   fs.writeFileSync(path.join(app.getPath('temp'), 'umbra-arayuz-testi.txt'), rapor);
   app.exit(kalan.length ? 1 : 0);
