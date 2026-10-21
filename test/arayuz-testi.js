@@ -248,6 +248,33 @@ module.exports = async function arayuzTesti(u) {
     yerIminiTemizle(url);
   });
 
+  // --- Hız ölçümü (yalnızca UMBRA_HIZ=1 ile): ağır sitelerin önbelleksiz açılış süreleri ve ana süreç gecikmesi ---
+  if (process.env.UMBRA_HIZ) {
+    await test('Hız ölçümü', async () => {
+      const siteler = ['https://www.hurriyet.com.tr/', 'https://www.trendyol.com/', 'https://www.youtube.com/', 'https://tr.wikipedia.org/wiki/T%C3%BCrkiye', 'https://www.sahibinden.com/'];
+      // Ana süreç ne kadar meşgul: 10 ms'lik zamanlayıcının gecikmesi
+      let enBuyukGecikme = 0, toplamGecikme = 0, olcum = 0, son = Date.now();
+      const gecikmeOlcer = setInterval(() => { const g = Date.now() - son - 10; son = Date.now(); if (g > 0) { toplamGecikme += g; enBuyukGecikme = Math.max(enBuyukGecikme, g); } olcum++; }, 10);
+      const sonuc = [];
+      for (const site of siteler) {
+        const sureler = [];
+        for (let i = 0; i < 3; i++) {
+          await aktifWc().session.clearCache();
+          const t0 = Date.now();
+          const bitti = new Promise((r) => aktifWc().once('did-stop-loading', r));
+          aktifWc().loadURL(site);
+          await Promise.race([bitti, bekle(30000)]);
+          const nav = await aktifWc().executeJavaScript(`(() => { const n = performance.getEntriesByType('navigation')[0]; return n ? [Math.round(n.domContentLoadedEventEnd), Math.round(n.loadEventEnd), performance.getEntriesByType('resource').length] : null; })()`).catch(() => null);
+          sureler.push({ toplam: Date.now() - t0, dcl: nav?.[0], yuk: nav?.[1], istek: nav?.[2] });
+        }
+        const ort = (k) => Math.round(sureler.reduce((t, s) => t + (s[k] || 0), 0) / sureler.length);
+        sonuc.push(`${new URL(site).hostname}: DCL ${ort('dcl')} ms, load ${ort('yuk')} ms, durma ${ort('toplam')} ms, ${ort('istek')} istek`);
+      }
+      clearInterval(gecikmeOlcer);
+      console.log('HIZ\n  ' + sonuc.join('\n  ') + `\n  ana süreç gecikmesi: ort ${(toplamGecikme / olcum).toFixed(2)} ms, en büyük ${enBuyukGecikme} ms`);
+    });
+  }
+
   // --- Dolandırıcılık ve zararlı yazılım koruması (test için listeye sahte bir kayıt eklenir) ---
   const uyariMetni = () => aktifWc().executeJavaScript('document.body ? document.body.innerText : ""').catch(() => '');
   await test('Dolandırıcılık sitesi açılmaz, uyarı gösterilir; "Güvenli sayfaya dön" geri götürür', async () => {

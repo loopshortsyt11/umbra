@@ -151,6 +151,20 @@ function guvenliSayfayaDon(wcId) {
   git(s, veri.anaSayfa(s.tur));
 }
 
+// Chrome gibi: adres çubuğunda ilk öneri bir siteyse, Enter'a basılmadan o siteye bağlantı (DNS + TLS) önceden
+// kurulur; sayfa daha hızlı açılır. Yalnızca normal sekmelerde: gizli ve Tor sekmelerinde yazılan hiçbir şey ağa çıkmaz.
+let sonOnBaglanti = '';
+function onBaglan(oneri) {
+  const s = aktifSekme();
+  if (!oneri || !s || s.tur !== 'normal' && s.tur !== 'ic') return;
+  if (oneri.tur === 'ara' || oneri.tur === 'oneri' || !webAdresiMi(oneri.url)) return;
+  let koken;
+  try { koken = new URL(oneri.url).origin; } catch { return; }
+  if (koken === sonOnBaglanti) return;
+  sonOnBaglanti = koken;
+  normalOturum.preconnect({ url: koken, numSockets: 1 });
+}
+
 function sekmeBul(wcId) {
   for (const s of sekmeler.values()) if (!s.view.webContents.isDestroyed() && s.view.webContents.id === wcId) return s;
   return null;
@@ -243,7 +257,8 @@ function sertlestir(ses, etiket) {
   // Google, giriş sayfasında marka listesinde "Google Chrome" (ya da bilinen başka bir tarayıcı) olmayan Chromium
   // tarayıcılarını "güvenli olmayabilir" diye reddeder. Umbra'nın motoru zaten Chromium olduğu için yalnızca o sayfada
   // marka listesine Chrome'un adı eklenir; motor ve söylenen kimlik tutarlı kalır.
-  ses.webRequest.onBeforeSendHeaders((ayr, cb) => {
+  // Süzgeç: yalnızca Google giriş sayfasının istekleri ana sürece uğrar (diğer her istekte araya girmek sayfaları yavaşlatır)
+  ses.webRequest.onBeforeSendHeaders({ urls: ['https://accounts.google.com/*'] }, (ayr, cb) => {
     if (!googleGirisMi(ayr.url)) return cb({});
     const basliklar = { ...ayr.requestHeaders };
     for (const ad of Object.keys(basliklar)) {
@@ -314,7 +329,8 @@ function sertlestir(ses, etiket) {
 
   // TurboDownloader için sayfadaki video/ses akışlarını yakala (yalnızca normal oturum)
   if (etiket === 'normal') {
-    ses.webRequest.onHeadersReceived((ayr, cb) => {
+    // Yalnızca video/ses taşıyabilen istek türleri incelenir; resim, betik, stil ve yazı tipleri ana sürece hiç uğramaz
+    ses.webRequest.onHeadersReceived({ urls: ['<all_urls>'], types: ['media', 'xhr', 'object', 'subFrame'] }, (ayr, cb) => {
       if (turbo.yanitIncele(ayr)) arayuzuGuncelle();
       cb({});
     });
@@ -1519,7 +1535,12 @@ function ipcKur() {
     const wc = aktifWc();
     if (wc) { wc.stopFindInPage('clearSelection'); wc.focus(); }
   });
-  ipcMain.handle('oneri:al', (e, metin) => (uiMi(e) ? veri.oneriler(String(metin)) : []));
+  ipcMain.handle('oneri:al', (e, metin) => {
+    if (!uiMi(e)) return [];
+    const liste = veri.oneriler(String(metin));
+    onBaglan(liste[0]);
+    return liste;
+  });
   ipcMain.handle('oneri:arama', (e, metin) => (uiMi(e) ? aramaOnerileri(metin) : []));
 
   // Video üstü "İndir ▼" düğmesi kanalları: yalnızca normal sekmelerin ana çerçevesindeki Umbra kodu çağırabilir.
@@ -1636,8 +1657,10 @@ app.whenReady().then(() => {
   });
 
   veri = new Veri(app.getPath('userData'));
-  // Liste, çerezsiz ayrı bir oturumla indirilir; ziyaret edilen adresler hiçbir yere gönderilmez
-  guvenlik = new GuvenlikListesi(app.getPath('userData'), session.fromPartition('umbra-guvenlik'));
+  // Liste, çerezsiz ayrı bir oturumla indirilir; ziyaret edilen adresler hiçbir yere gönderilmez.
+  // Diskteki listenin okunması (~50 ms) açılışı geciktirmesin diye ilk sayfa çizildikten sonra yapılır.
+  guvenlik = new GuvenlikListesi(app.getPath('userData'), session.fromPartition('umbra-guvenlik'), { gecYukle: true });
+  setTimeout(() => guvenlik.yukle(), ARAYUZ_TESTI || DUMAN_TESTI ? 0 : 1500);
   if (!DUMAN_TESTI && !ARAYUZ_TESTI) {
     setTimeout(() => guvenlik.guncelle().catch(() => {}), 15000);
     setInterval(() => guvenlik.guncelle().catch(() => {}), 3 * 60 * 60 * 1000).unref?.();

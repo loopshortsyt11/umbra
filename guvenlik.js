@@ -41,17 +41,18 @@ function adresAnahtari(url) {
 }
 
 class GuvenlikListesi {
-  constructor(dizin, oturum) {
+  constructor(dizin, oturum, { gecYukle = false } = {}) {
     this.dosya = path.join(dizin, 'guvenlik-listesi.json');
     this.oturum = oturum; // yalnızca listeleri indirmek için kullanılan, çerezsiz ayrı oturum
     this.alanlar = new Map(); // alan adı -> tür
     this.adresler = new Map(); // adres anahtarı -> tür
     this.zaman = 0;
     this.guncelleniyor = null;
-    this.yukle();
+    if (!gecYukle) this.yukle();
   }
 
   yukle() {
+    if (this.zaman) return; // indirme daha önce tamamlandıysa diskteki eski liste okunmaz
     try {
       const v = JSON.parse(fs.readFileSync(this.dosya, 'utf8'));
       this.alanlar = new Map(v.alanlar);
