@@ -481,6 +481,10 @@ function adreseCevir(girdi, tur = 'normal') {
   if (icSayfa(t)) return t;
   if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/.*)?$/i.test(t)) return 'http://' + t;
   if (!/\s/.test(t) && /^[^/\s]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(t)) return 'https://' + t;
+  if (t.startsWith('?')) return t.slice(1).trim() ? veri.aramaAdresi(t.slice(1).trim(), tur) : null; // "?kelime" her zaman arar
+  // Tek kelime ("youtube"): geçmişte/bilinen sitelerde karşılığı varsa doğrudan o siteye git
+  const site = veri.siteTahmini(t);
+  if (site) return site;
   return veri.aramaAdresi(t, tur);
 }
 

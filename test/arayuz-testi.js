@@ -434,6 +434,29 @@ module.exports = async function arayuzTesti(u) {
     u.veri.ayarla('turboIndir', false);
   });
 
+  // --- Adres çubuğu: tek kelimeyle siteye gitme ---
+  await test('Adres çubuğu: "youtube" yazınca youtube.com açılır, "?youtube" arar', async () => {
+    await tikla('#yeni-sekme');
+    // yeni sekme sayfası yüklenince odağı kendi arama kutusuna alır; ondan sonra adres çubuğuna geç
+    await kosul(async () => !aktifWc().isLoading() && (await konum('.arama-kutusu input', aktifWc())) !== null, 5000, 'yeni sekme sayfası');
+    await bekle(400);
+    await tikla('#adres');
+    // ilk tıklama tüm adresi seçmeli; yazılan metin eski adresin yerine geçmeli
+    await ui().insertText('youtube');
+    const deger = await ui().executeJavaScript('document.getElementById("adres").value');
+    if (deger !== 'youtube') throw new Error('adres çubuğuna tıklayınca eski adres seçilmedi, yazı eklendi: ' + deger);
+    await kosul(async () => (await ui().executeJavaScript('document.querySelector("#oneriler .oneri .tur")?.textContent')) === '🌐', 3000, 'ilk önerinin 🌐 site olması');
+    ui().sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+    ui().sendInputEvent({ type: 'char', keyCode: '\r' });
+    ui().sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+    await kosul(() => /^https:\/\/(www\.)?youtube\.com\//.test(u.sekmeAdresi(u.aktifSekme())), 20000, 'youtube.com');
+    await yazEnter('#adres', '?youtube');
+    await kosul(() => !/youtube\.com/.test(u.sekmeAdresi(u.aktifSekme())), 10000, 'arama sayfası');
+    const adres = u.sekmeAdresi(u.aktifSekme());
+    if (!/search|umbra:\/\/ara/.test(adres) || !adres.includes('youtube')) throw new Error('"?youtube" aranmadı: ' + adres);
+    if (u.veri.siteTahmini('merhaba') !== null) throw new Error('bilinmeyen kelime siteye çevrildi');
+  });
+
   // --- Google girişi ---
   await test('Google giriş sayfasında Chrome markası, başka sitede normal kimlik', async () => {
     await tikla('#yeni-sekme');

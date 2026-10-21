@@ -28,6 +28,24 @@ const VARSAYILAN_AYARLAR = {
 
 const GECMIS_SINIRI = 10000;
 
+// Adres çubuğuna tek kelime yazıldığında (ör. "youtube") geçmişte yoksa gidilecek bilinen siteler
+const BILINEN_SITELER = {
+  youtube: 'www.youtube.com', google: 'www.google.com', gmail: 'mail.google.com', drive: 'drive.google.com',
+  maps: 'maps.google.com', translate: 'translate.google.com', ceviri: 'translate.google.com',
+  facebook: 'www.facebook.com', instagram: 'www.instagram.com', whatsapp: 'web.whatsapp.com',
+  twitter: 'x.com', x: 'x.com', tiktok: 'www.tiktok.com', reddit: 'www.reddit.com', linkedin: 'www.linkedin.com',
+  twitch: 'www.twitch.tv', kick: 'kick.com', discord: 'discord.com', telegram: 'web.telegram.org',
+  netflix: 'www.netflix.com', spotify: 'open.spotify.com', disney: 'www.disneyplus.com', exxen: 'www.exxen.com',
+  wikipedia: 'tr.wikipedia.org', vikipedi: 'tr.wikipedia.org', github: 'github.com', stackoverflow: 'stackoverflow.com',
+  outlook: 'outlook.live.com', hotmail: 'outlook.live.com', yahoo: 'www.yahoo.com', bing: 'www.bing.com',
+  amazon: 'www.amazon.com.tr', trendyol: 'www.trendyol.com', hepsiburada: 'www.hepsiburada.com',
+  sahibinden: 'www.sahibinden.com', n11: 'www.n11.com', ciceksepeti: 'www.ciceksepeti.com', getir: 'getir.com',
+  yemeksepeti: 'www.yemeksepeti.com', eksisozluk: 'eksisozluk.com', eksi: 'eksisozluk.com',
+  chatgpt: 'chatgpt.com', claude: 'claude.ai', gemini: 'gemini.google.com', edevlet: 'www.turkiye.gov.tr',
+  hurriyet: 'www.hurriyet.com.tr', sozcu: 'www.sozcu.com.tr', milliyet: 'www.milliyet.com.tr', ntv: 'www.ntv.com.tr',
+  steam: 'store.steampowered.com', epic: 'store.epicgames.com', roblox: 'www.roblox.com',
+};
+
 class Depo {
   constructor(dosya, varsayilan) {
     this.dosya = dosya;
@@ -157,10 +175,30 @@ class Veri {
     this.yerImiDeposu.kaydet();
   }
 
-  // --- Adres çubuğu önerileri: yer imleri önce, sonra sık ziyaret edilen geçmiş ---
+  // Tek kelimelik girdiden ("youtube") gidilecek siteyi tahmin eder: önce yer imleri ve geçmişte en çok
+  // ziyaret edilen eşleşen site, yoksa bilinen siteler listesi. Bulamazsa null (girdi aranır).
+  siteTahmini(girdi) {
+    const ad = String(girdi || '').trim().toLowerCase();
+    if (!/^[a-z0-9-]{1,40}$/.test(ad)) return null;
+    const sayim = new Map();
+    for (const kayit of [...this.yerImleri, ...this.gecmis]) {
+      let u;
+      try { u = new URL(kayit.url); } catch { continue; }
+      if (u.protocol !== 'https:') continue;
+      const host = u.hostname.replace(/^www\./, '');
+      if (host.split('.')[0] !== ad) continue;
+      sayim.set(u.origin, (sayim.get(u.origin) || 0) + 1);
+    }
+    if (sayim.size) return [...sayim.entries()].sort((a, b) => b[1] - a[1])[0][0] + '/';
+    return BILINEN_SITELER[ad] ? `https://${BILINEN_SITELER[ad]}/` : null;
+  }
+
+  // --- Adres çubuğu önerileri: tahmin edilen site, yer imleri, sonra sık ziyaret edilen geçmiş ---
   oneriler(metin, adet = 6) {
     const q = metin.trim().toLowerCase();
     if (!q) return [];
+    const site = this.siteTahmini(q);
+    if (site) adet -= 1;
     const uyar = (x) => x.url.toLowerCase().includes(q) || (x.baslik || '').toLowerCase().includes(q);
     const sonuc = [];
     const gorulen = new Set();
@@ -180,6 +218,7 @@ class Veri {
       if (sonuc.length >= adet) break;
       if (!gorulen.has(g.url)) { gorulen.add(g.url); sonuc.push({ url: g.url, baslik: g.baslik, tur: 'gecmis' }); }
     }
+    if (site) sonuc.unshift({ url: site, baslik: new URL(site).hostname.replace(/^www\./, ''), tur: 'site' });
     return sonuc;
   }
 

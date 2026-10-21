@@ -51,7 +51,7 @@ function onerileriGoster() {
     el.className = 'oneri' + (i === seciliOneri ? ' secili' : '');
     const tur = document.createElement('span');
     tur.className = 'tur';
-    tur.textContent = o.tur === 'yerimi' ? '☆' : o.tur === 'ara' ? '🔍' : '🕘';
+    tur.textContent = { yerimi: '☆', ara: '🔍', site: '🌐' }[o.tur] || '🕘';
     const metin = document.createElement('span');
     metin.className = 'metin';
     metin.textContent = o.baslik || o.url;
@@ -74,7 +74,7 @@ function oneriSec(i) {
   if (!o) return;
   onerileriGizle();
   adresDuzenleniyor = false;
-  umbra.git(o.tur === 'ara' ? o.baslik : o.url);
+  umbra.git(o.tur === 'ara' ? '?' + o.baslik : o.url); // "?" öneki: site tahmini yapılmadan aranır
   adres.blur();
 }
 
@@ -84,7 +84,9 @@ async function onerileriGetir() {
   if (!metin.trim()) return onerileriGizle();
   const bulunan = await umbra.oneriler(metin);
   if (istek !== oneriIstek || document.activeElement !== adres) return;
-  oneriler = [{ tur: 'ara', baslik: metin.trim(), url: '' }, ...bulunan];
+  // Tahmin edilen site (ör. "youtube" → youtube.com) en üstte; Enter'ın gideceği yer de odur
+  const site = bulunan.filter((o) => o.tur === 'site');
+  oneriler = [...site, { tur: 'ara', baslik: metin.trim().replace(/^\?/, ''), url: '' }, ...bulunan.filter((o) => o.tur !== 'site')];
   seciliOneri = -1;
   onerileriGoster();
 }
@@ -98,6 +100,15 @@ $('adres-formu').onsubmit = (e) => {
   adres.blur();
 };
 adres.addEventListener('focus', () => { adresDuzenleniyor = true; adres.select(); });
+// Chrome'daki gibi: adres çubuğuna ilk tıklama tüm adresi seçer. Odaklanınca yapılan seçimi, hemen ardından
+// gelen mouseup bozup imleci tıklanan yere koyar; bu yüzden ilk tıklamanın mouseup'ı engellenir.
+let ilkTiklama = false;
+adres.addEventListener('mousedown', () => { ilkTiklama = document.activeElement !== adres; });
+adres.addEventListener('mouseup', (e) => {
+  if (!ilkTiklama) return;
+  ilkTiklama = false;
+  if (adres.selectionStart === adres.selectionEnd) { e.preventDefault(); adres.select(); }
+});
 adres.addEventListener('blur', () => { adresDuzenleniyor = false; onerileriGizle(); });
 adres.addEventListener('input', () => { adresDuzenleniyor = true; onerileriGetir(); });
 adres.addEventListener('keydown', (e) => {
