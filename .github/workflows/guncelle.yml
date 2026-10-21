@@ -1,10 +1,10 @@
-# Haftalık güvenlik güncellemesi: Electron (Chromium yamaları) ve Tor'un en son sürümleriyle Umbra'yı derler ve yayınlar.
+# Günlük güvenlik güncellemesi: Electron (Chromium yamaları) ve Tor'un en son sürümleriyle Umbra'yı derler ve yayınlar.
 # Kurulu Umbra'lar yeni sürümü GitHub Releases'tan kendiliğinden indirir.
-name: Haftalık güvenlik güncellemesi
+name: Günlük güvenlik güncellemesi
 
 on:
   schedule:
-    - cron: '0 3 * * 1'   # her pazartesi 03:00 UTC
+    - cron: '0 3 * * *'   # her gün 03:00 UTC (yalnızca Electron ya da Tor yenilendiyse yayınlar)
   workflow_dispatch:       # elle "yeni sürüm yayınla"
 
 permissions:

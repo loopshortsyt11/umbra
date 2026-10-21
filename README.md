@@ -16,6 +16,7 @@ Windows 10/11 (64 bit). Dosyalar kod imzalama sertifikasıyla imzalı olmadığ�
 ## Özellikler
 
 - **Güvenlik:** sandbox ve site izolasyonu, HTTPS öncelikli, şifreli DNS (DoH), geçersiz sertifika engeli, izin pencereleri
+- **🛡 Dolandırıcılık ve zararlı yazılım koruması:** bilinen oltalama ve virüs siteleri açılmadan uyarı verilir, bu sitelerden indirme engellenir. Listeler (URLhaus, Phishing Army, OpenPhish) günde bir kez indirilir; denetim yereldir, ziyaret edilen adresler hiçbir yere gönderilmez
 - **🧅 Tor sekmesi:** gömülü ve imzası doğrulanmış Tor; engelli ağlarda Snowflake/obfs4/meek köprüleri otomatik denenir
 - **🕶 Gizli sekme**, reklam ve izleyici engelleme
 - **✨ Umbra AI:** sayfayı özetleme, soru sorma, çeviri (Claude, kendi API anahtarınla)
@@ -25,8 +26,8 @@ Windows 10/11 (64 bit). Dosyalar kod imzalama sertifikasıyla imzalı olmadığ�
 
 ## Güncellemeler
 
-`.github/workflows/guncelle.yml` her pazartesi Electron'un (Chromium güvenlik yamaları) ve Tor'un en son
-sürümlerini alır; duman testi geçerse yeni sürümü yayınlar. Kurulu Umbra'lar bunu arka planda indirir.
+`.github/workflows/guncelle.yml` her gün Electron'un (Chromium güvenlik yamaları) ve Tor'un en son
+sürümlerini denetler; yeni sürüm çıkmışsa ve duman testi geçerse yeni sürümü yayınlar. Kurulu Umbra'lar bunu arka planda indirir.
 
 ## Geliştirme
 

@@ -21,6 +21,7 @@
       "turboindir.js",
       "arama.js",
       "guncelleme.js",
+      "guvenlik.js",
       "arayuz/**",
       "panel/**",
       "ic/**",

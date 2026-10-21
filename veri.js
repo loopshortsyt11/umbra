@@ -23,6 +23,7 @@ const VARSAYILAN_AYARLAR = {
   anaSayfa: '',              // boşsa Umbra'nın yeni sekme sayfası
   acilis: 'yeni-sekme',      // Chrome'daki gibi: 'yeni-sekme' ya da 'devam' (kaldığın yerden devam et)
   izleyiciEngelle: true,
+  dolandiricilikKorumasi: true, // bilinen dolandırıcılık ve zararlı yazılım sitelerinde uyarı (yerel liste)
   turboIndir: true,          // normal sekmelerdeki indirmeleri TurboIndir'e devret (gizli/Tor'da asla)
   aramaOnerileri: true,      // adres çubuğuna yazılanlar için DuckDuckGo arama önerileri (Tor sekmelerinde asla)
   yerImiCubugu: true,        // adres çubuğunun altındaki yer işaretleri çubuğu (Ctrl+Shift+B)

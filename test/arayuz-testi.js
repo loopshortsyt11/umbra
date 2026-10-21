@@ -248,6 +248,29 @@ module.exports = async function arayuzTesti(u) {
     yerIminiTemizle(url);
   });
 
+  // --- Dolandırıcılık ve zararlı yazılım koruması (test için listeye sahte bir kayıt eklenir) ---
+  const uyariMetni = () => aktifWc().executeJavaScript('document.body ? document.body.innerText : ""').catch(() => '');
+  await test('Dolandırıcılık sitesi açılmaz, uyarı gösterilir; "Güvenli sayfaya dön" geri götürür', async () => {
+    u.guvenlik.alanlar.set('example.org', 'oltalama');
+    await yazEnter('#adres', 'example.com');
+    await adresBekle('example.com', 15000);
+    await kosul(() => !aktifWc().isLoading(), 15000, 'yüklemenin bitmesi');
+    await yazEnter('#adres', 'example.org');
+    await kosul(async () => aktifWc().getURL().startsWith('data:') && (await uyariMetni()).includes('dolandırıcılık'), 10000, 'uyarı sayfası');
+    if (!u.sekmeAdresi(u.aktifSekme()).includes('example.org')) throw new Error('adres çubuğu tehlikeli adresi göstermiyor');
+    await tikla('button.geri', { wc: aktifWc() });
+    await kosul(() => /^https:\/\/example\.com\//.test(aktifWc().getURL()), 10000, 'önceki sayfaya dönüş');
+  });
+
+  await test('Uyarıda "riski göze alıp siteye git" siteyi açar', async () => {
+    await yazEnter('#adres', 'example.org');
+    await kosul(async () => aktifWc().getURL().startsWith('data:') && (await uyariMetni()).includes('dolandırıcılık'), 10000, 'uyarı sayfası');
+    await aktifWc().executeJavaScript('document.querySelector("details").open = true');
+    await tikla('details a', { wc: aktifWc() });
+    await kosul(() => /^https:\/\/example\.org\//.test(aktifWc().getURL()), 15000, 'sitenin açılması');
+    u.guvenlik.alanlar.delete('example.org');
+  });
+
   // Google/Apple ile giriş: site küçük bir pencere açar ve sonucu window.opener ile geri alır (claude.ai gibi)
   await test('Giriş penceresi açılır pencere olarak açılır ve açan sayfayla haberleşir', async () => {
     const { BrowserWindow } = require('electron');

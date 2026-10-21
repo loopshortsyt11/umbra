@@ -7,6 +7,7 @@ const { Asistan } = require('./ai');
 const { Veri, ARAMA_MOTORLARI, OZEL_MOTORLAR, OZEL_BASLANGIC, klasorAdi } = require('./veri');
 const { TurboIndir } = require('./turboindir');
 const { Guncelleyici } = require('./guncelleme');
+const { GuvenlikListesi } = require('./guvenlik');
 const { webArama } = require('./arama');
 
 const UI_YUKSEKLIK = 82;
@@ -101,7 +102,59 @@ if (!DUMAN_TESTI && !ARAYUZ_TESTI) {
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
-let pencere, arayuz, normalOturum, tor, asistan, veri, turbo;
+let pencere, arayuz, normalOturum, tor, asistan, veri, turbo, guvenlik;
+
+// --- Dolandırıcılık ve zararlı yazılım koruması (yerel liste; adresler dışarı gönderilmez) ---
+const GUVENLIK_HOST = 'umbra-guvenlik.invalid'; // uyarı sayfasındaki "geri dön" / "yine de devam et" bağlantıları
+const riskKabul = new Set();      // "etiket|alan adı": kullanıcının uyarıya rağmen devam ettiği siteler (oturum boyunca)
+const guvenlikEngeli = new Map(); // webContents.id -> { url, tur }: engellenen ve uyarısı gösterilecek sayfa
+const devamBiletleri = new Map(); // tek kullanımlık "yine de devam et" bileti -> { url, etiket }
+
+function guvenlikUyarisi(url, tur) {
+  const kac = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  let host = url;
+  try { host = new URL(url).hostname; } catch {}
+  const bilet = require('crypto').randomBytes(16).toString('hex');
+  devamBiletleri.set(bilet, { url });
+  if (devamBiletleri.size > 100) devamBiletleri.delete(devamBiletleri.keys().next().value);
+  const oltalama = tur === 'oltalama';
+  const baslik = oltalama ? 'Tehlikeli site: dolandırıcılık' : 'Tehlikeli site: zararlı yazılım';
+  const aciklama = oltalama
+    ? `<b>${kac(host)}</b> sitesi bilinen bir dolandırıcılık (oltalama) sitesi. Şifrenizi, kart bilgilerinizi ya da kimlik bilgilerinizi çalmak için gerçek bir siteyi taklit ediyor olabilir.`
+    : `<b>${kac(host)}</b> sitesi zararlı yazılım yaydığı bilinen bir site. Bilgisayarınıza virüs, fidye yazılımı ya da casus yazılım bulaştırabilir.`;
+  const html = `<!doctype html><meta charset="utf-8"><title>${baslik}</title>
+<style>body{font:15px system-ui,"Segoe UI";background:#b3261e;color:#fff;margin:0;min-height:100vh;display:grid;place-items:center}
+main{max-width:620px;padding:32px}.simge{font-size:56px;line-height:1}h1{font-size:26px;margin:18px 0 12px}p{line-height:1.6;opacity:.95}
+.dugmeler{display:flex;gap:12px;align-items:center;margin-top:28px;flex-wrap:wrap}
+.geri{background:#fff;color:#b3261e;border:0;border-radius:20px;padding:10px 22px;font:600 15px system-ui;cursor:pointer}
+details{margin-top:28px;opacity:.9}summary{cursor:pointer}a{color:#fff}small{display:block;margin-top:10px;opacity:.75}</style>
+<main><div class="simge">⚠</div><h1>${baslik}</h1><p>${aciklama}</p>
+<p>Umbra bu sayfayı açmadı. Bu karar bilgisayarınızdaki yerel listeyle verildi; adres hiçbir yere gönderilmedi.</p>
+<div class="dugmeler"><button class="geri" onclick="location.href='https://${GUVENLIK_HOST}/geri'">Güvenli sayfaya dön</button></div>
+<details><summary>Ayrıntılar</summary><p>Adres: ${kac(url)}</p>
+<p>Bu sitenin güvenli olduğundan eminsen <a href="https://${GUVENLIK_HOST}/devam?b=${bilet}">riski göze alıp siteye git</a>.
+<small>Kaynaklar: URLhaus, Phishing Army, OpenPhish (malware-filter derlemesi)</small></p></details></main>`;
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+}
+
+// Uyarıdan geri dönüş: geçmişte uyarı sayfası ve engellenen adresin kaydı da vardır; bir adım geri gitmek uyarıyı
+// yeniden açar. Bu yüzden en son güvenli kayda (tehlikeli olmayan bir web sayfası) gidilir, yoksa ana sayfaya.
+function guvenliSayfayaDon(wcId) {
+  const s = sekmeBul(wcId);
+  if (!s) return;
+  const g = s.view.webContents.navigationHistory;
+  for (let i = g.getActiveIndex() - 1; i >= 0; i--) {
+    const adres = g.getEntryAtIndex(i)?.url || '';
+    if (webAdresiMi(adres) && !guvenlik?.denetle(adres)) return g.goToIndex(i);
+  }
+  if (s.onceki) return geriGit(s); // geri zincirinde saklanan sayfa (ör. yeni sekme sayfası)
+  git(s, veri.anaSayfa(s.tur));
+}
+
+function sekmeBul(wcId) {
+  for (const s of sekmeler.values()) if (!s.view.webContents.isDestroyed() && s.view.webContents.id === wcId) return s;
+  return null;
+}
 const guncelleyici = new Guncelleyici();
 const turboAtla = new Set();           // TurboDownloader'a gönderilemeyip Umbra'ya geri verilen adresler
 let panel = null, panelAcik = false, sonPanelTuru = null;
@@ -202,6 +255,26 @@ function sertlestir(ses, etiket) {
   ses.webRequest.onBeforeRequest((ayr, cb) => {
     let u;
     try { u = new URL(ayr.url); } catch { return cb({}); }
+    // Uyarı sayfasındaki bağlantılar
+    if (u.hostname === GUVENLIK_HOST) {
+      const bilet = devamBiletleri.get(u.searchParams.get('b') || '');
+      if (u.pathname === '/devam' && bilet) {
+        devamBiletleri.delete(u.searchParams.get('b'));
+        try { riskKabul.add(`${etiket}|${new URL(bilet.url).hostname}`); } catch {}
+        return cb({ redirectURL: bilet.url });
+      }
+      cb({ cancel: true });
+      if (u.pathname === '/geri') setImmediate(() => guvenliSayfayaDon(ayr.webContentsId));
+      return;
+    }
+    // Dolandırıcılık / zararlı yazılım sitesi: sayfa açılmaz, yerine uyarı gösterilir (did-fail-load'da)
+    if ((ayr.resourceType === 'mainFrame' || ayr.resourceType === 'subFrame') && veri.ayarlar.dolandiricilikKorumasi && guvenlik) {
+      const tehlike = guvenlik.denetle(ayr.url);
+      if (tehlike && !riskKabul.has(`${etiket}|${u.hostname}`)) {
+        if (ayr.resourceType === 'mainFrame') guvenlikEngeli.set(ayr.webContentsId, { url: ayr.url, tur: tehlike.tur });
+        return cb({ cancel: true });
+      }
+    }
     if (ayr.resourceType !== 'mainFrame' && veri.ayarlar.izleyiciEngelle && izleyiciMi(u.hostname)) {
       engellenen.set(ayr.webContentsId, (engellenen.get(ayr.webContentsId) || 0) + 1);
       arayuzuGuncelle();
@@ -250,6 +323,18 @@ function sertlestir(ses, etiket) {
   ses.on('will-download', (e, item, wc) => {
     const ad = item.getFilename();
     const url = item.getURL();
+    // Zararlı yazılım yaydığı bilinen bir yerden gelen indirme hiç başlatılmaz
+    const tehlike = veri.ayarlar.dolandiricilikKorumasi && guvenlik?.denetle(url);
+    if (tehlike) {
+      e.preventDefault();
+      dialog.showMessageBox(pencere, {
+        type: 'error',
+        title: 'İndirme engellendi',
+        message: `"${ad}" indirilmedi.`,
+        detail: `${kokeni(url)} ${tehlike.tur === 'oltalama' ? 'bilinen bir dolandırıcılık sitesi' : 'zararlı yazılım yaydığı bilinen bir site'}. Dosya bilgisayarınıza zarar verebilir.`,
+      });
+      return;
+    }
     if (RISKLI_DOSYA.test(ad)) {
       const secim = dialog.showMessageBoxSync(pencere, {
         type: 'warning',
@@ -785,6 +870,13 @@ function sekmeAc(url, tur = 'normal', { konum = null, arkaPlanda = false } = {})
 
   wc.on('did-fail-load', async (_e, kod, aciklama, adres, anaCerceve) => {
     if (!anaCerceve || kod === -3 || tur === 'ic') return; // -3: kullanıcı iptal etti / yönlendirme
+    if (adres.includes(GUVENLIK_HOST)) return; // uyarı sayfasının kendi bağlantısı (geri dönüş ayrıca yapılır)
+    const engel = guvenlikEngeli.get(wc.id);
+    if (engel) {
+      guvenlikEngeli.delete(wc.id);
+      sekme.hataAdresi = engel.url;
+      return wc.loadURL(guvenlikUyarisi(engel.url, engel.tur));
+    }
     let host = '';
     try { host = new URL(adres).hostname; } catch {}
     if (adres.startsWith('https://') && yukseltilen.has(host)) {
@@ -1281,6 +1373,7 @@ function icVerisi(sayfa, arama = '') {
       aiAnahtar: asistan.anahtarVar(),
       turboAcik: turbo.acik,
       guncelleme: guncelleyici.durum,
+      guvenlikListesi: { kayit: guvenlik.boyut, zaman: guvenlik.zaman },
       surum: { umbra: app.getVersion(), chromium: process.versions.chrome, electron: process.versions.electron },
     };
   }
@@ -1543,6 +1636,12 @@ app.whenReady().then(() => {
   });
 
   veri = new Veri(app.getPath('userData'));
+  // Liste, çerezsiz ayrı bir oturumla indirilir; ziyaret edilen adresler hiçbir yere gönderilmez
+  guvenlik = new GuvenlikListesi(app.getPath('userData'), session.fromPartition('umbra-guvenlik'));
+  if (!DUMAN_TESTI && !ARAYUZ_TESTI) {
+    setTimeout(() => guvenlik.guncelle().catch(() => {}), 15000);
+    setInterval(() => guvenlik.guncelle().catch(() => {}), 3 * 60 * 60 * 1000).unref?.();
+  }
   turbo = new TurboIndir();
   turbo.degisince = () => {
     arayuzuGuncelle();
@@ -1622,6 +1721,7 @@ app.whenReady().then(() => {
       get panel() { return panel; },
       get panelAcik() { return panelAcik; },
       get pencere() { return pencere; },
+      get guvenlik() { return guvenlik; },
       sekmeler, aktifSekme, veri, sekmeAc, sekmeAdresi, tumIndirmeler, anaMenuOgeleri,
     }), 1500));
   }

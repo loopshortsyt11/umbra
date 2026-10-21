@@ -242,7 +242,7 @@ function yedekKarti() {
 }
 
 async function ayarlarCiz() {
-  const { ayarlar, motorlar, ozelMotorlar, aiAnahtar, turboAcik, guncelleme, surum } = await ic.veri('ayarlar');
+  const { ayarlar, motorlar, ozelMotorlar, aiAnahtar, turboAcik, guncelleme, surum, guvenlikListesi = {} } = await ic.veri('ayarlar');
   const kaydet = async (k, v) => { const s = await ic.eylem('ayar', k, v); bildir(s.tamam ? 'Kaydedildi' : 'Geçersiz değer'); };
 
   const motor = el('select', { onchange: () => kaydet('aramaMotoru', motor.value) },
@@ -281,6 +281,13 @@ async function ayarlarCiz() {
     el('div.kart', {},
       ayarSatiri('Reklam ve izleyici engelleme', 'Bilinen reklam ve takip sunucularına giden istekler engellenir.',
         anahtarDugme(ayarlar.izleyiciEngelle, (v) => kaydet('izleyiciEngelle', v))),
+      ayarSatiri('Dolandırıcılık ve zararlı yazılım koruması',
+        'Bilinen dolandırıcılık (oltalama) ve virüs yayan siteler açılmadan önce uyarı gösterilir, bu sitelerden indirme engellenir. '
+          + 'Denetim bilgisayarındaki listeyle yapılır; girdiğin adresler hiçbir yere gönderilmez. '
+          + (guvenlikListesi.kayit
+            ? `Liste: ${guvenlikListesi.kayit.toLocaleString('tr-TR')} kayıt, son güncelleme ${new Date(guvenlikListesi.zaman).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}.`
+            : 'Liste ilk açılıştan kısa süre sonra indirilecek.'),
+        anahtarDugme(ayarlar.dolandiricilikKorumasi, (v) => kaydet('dolandiricilikKorumasi', v))),
     ),
     el('div.kart', { style: 'margin-top:10px' },
       [
