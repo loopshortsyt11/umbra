@@ -1,7 +1,7 @@
 {
   "name": "umbra",
   "productName": "Umbra",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Gizlilik odaklı, Chromium tabanlı tarayıcı: Tor sekmesi, AI paneli, izleyici engelleme",
   "main": "main.js",
   "scripts": {
